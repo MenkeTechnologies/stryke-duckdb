@@ -1,0 +1,19 @@
+[package]
+name = "duckdb"
+version = "0.1.0"
+description = "DuckDB embedded analytical SQL engine for stryke. Direct-query parquet/CSV/JSON from disk or URL without loading, plus persistent .duckdb files."
+authors = ["MenkeTechnologies"]
+license = "MIT"
+repository = "https://github.com/MenkeTechnologies/stryke-duckdb"
+edition = "2026"
+
+[bin]
+duck = "bin/duck.stk"
+duck-build = "bin/duck-build.stk"
+
+[scripts]
+build = "cargo build --release"
+build-debug = "cargo build"
+clean = "cargo clean"
+test = "s test t/"
+install = "s pkg install -g ."

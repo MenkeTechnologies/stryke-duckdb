@@ -1,0 +1,33 @@
+[package]
+name = "stryke-duckdb-helper"
+version = "0.1.0"
+edition = "2021"
+description = "DuckDB bridge binary for the stryke `duckdb` package."
+authors = ["MenkeTechnologies"]
+license = "MIT"
+repository = "https://github.com/MenkeTechnologies/stryke-duckdb"
+publish = false
+
+[[bin]]
+name = "stryke-duckdb-helper"
+path = "src/main.rs"
+
+[dependencies]
+# `bundled` compiles libduckdb from source — single static binary, no
+# system .so. Adds ~3-5 minutes to a cold build; cargo caches the
+# artifact after that.
+duckdb = { version = "1", features = ["bundled", "json", "parquet"] }
+clap = { version = "4", default-features = false, features = [
+    "std", "derive", "help", "usage", "error-context", "env",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+anyhow = "1"
+base64 = "0.22"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
