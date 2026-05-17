@@ -1,0 +1,667 @@
+//! `stryke-duckdb-helper` — embedded DuckDB SQL bridge for stryke.
+//!
+//! DuckDB lives in-process; this binary just exposes a JSON/NDJSON CLI
+//! over the standard Rust binding (`duckdb` crate, `bundled` feature so
+//! no system library is needed).
+//!
+//! Two modes:
+//!   * `--db PATH` opens a persistent `.duckdb` file.
+//!   * default: an in-memory database, perfect for one-shot queries
+//!     that go straight against parquet/CSV/JSON files via DuckDB's
+//!     direct-file SQL (e.g. `SELECT * FROM 'data.parquet'`).
+
+use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::path::PathBuf;
+
+use anyhow::{anyhow, bail, Context, Result};
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine as _;
+use clap::{Args, Parser, Subcommand};
+use duckdb::types::{Value, ValueRef};
+use duckdb::{Connection, ToSql};
+use serde_json::{json, Map as JMap, Value as JsonValue};
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "stryke-duckdb-helper",
+    version,
+    about = "DuckDB embedded SQL bridge for the stryke `duckdb` package"
+)]
+struct Cli {
+    /// Path to a `.duckdb` file. Omit for an in-memory database.
+    #[arg(long, short = 'D', env = "DUCKDB_FILE", global = true)]
+    db: Option<PathBuf>,
+
+    /// `SET <name>=<value>;` to run on every connection. Repeatable.
+    #[arg(long = "pragma", short = 'p', global = true, value_name = "K=V")]
+    pragmas: Vec<String>,
+
+    /// Read-only mode (file dbs only).
+    #[arg(long, global = true)]
+    read_only: bool,
+
+    /// Auto-install + load a DuckDB extension on connect. Repeatable.
+    /// Examples: `httpfs`, `aws`, `iceberg`, `excel`, `spatial`.
+    #[arg(long = "extension", short = 'e', global = true, value_name = "NAME")]
+    extensions: Vec<String>,
+
+    #[command(subcommand)]
+    cmd: Cmd,
+}
+
+#[derive(Subcommand, Debug)]
+enum Cmd {
+    /// Run a SELECT (or any statement that yields rows). NDJSON to stdout.
+    Query {
+        sql: String,
+        /// JSON array of positional bind values for `?` placeholders.
+        #[arg(long)]
+        bind: Option<String>,
+        #[arg(long)]
+        columnar: bool,
+        #[arg(long)]
+        with_meta: bool,
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Run a non-SELECT statement (DDL/DML). Reports affected rows.
+    Execute {
+        sql: String,
+        #[arg(long)]
+        bind: Option<String>,
+    },
+    /// Run a multi-statement SQL script.
+    Exec {
+        #[arg(long, short = 'f')]
+        file: PathBuf,
+    },
+    /// `SELECT * FROM <table-or-file> [LIMIT N]` shorthand. Accepts a bare
+    /// table name, a `gs://`/`s3://`/`http://`/`https://` URL, or any
+    /// path DuckDB can read via its auto-format reader.
+    Dump {
+        source: String,
+        #[arg(long)]
+        columns: Option<String>,
+        #[arg(long = "where")]
+        where_clause: Option<String>,
+        #[arg(long)]
+        order_by: Option<String>,
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Import a file into a new table. `kind`: `parquet|csv|json|auto`.
+    Import {
+        path: PathBuf,
+        #[arg(long, short = 't')]
+        table: String,
+        #[arg(long, default_value = "auto")]
+        kind: String,
+        /// Drop the table first if it exists.
+        #[arg(long)]
+        replace: bool,
+    },
+    /// Export a table to a file. `kind`: `parquet|csv|json`.
+    Export {
+        #[arg(long, short = 't')]
+        table: String,
+        path: PathBuf,
+        #[arg(long, default_value = "parquet")]
+        kind: String,
+        #[arg(long, default_value = "zstd")]
+        compression: String,
+    },
+    /// List tables in the (current schema of the) database.
+    Tables,
+    /// Column info for one table.
+    Schema {
+        #[arg(long, short = 't')]
+        table: String,
+    },
+    /// Cardinality, file size, DuckDB version, attached databases.
+    Inspect,
+    /// `SELECT 1` round-trip.
+    Ping,
+}
+
+/// Shared global flags-as-args (kept around for tests / sub-helpers).
+#[derive(Args, Debug, Clone)]
+#[allow(dead_code)]
+struct GlobalConn {
+    db: Option<PathBuf>,
+    pragmas: Vec<String>,
+    extensions: Vec<String>,
+    read_only: bool,
+}
+
+fn main() {
+    if let Err(e) = run() {
+        eprintln!("stryke-duckdb-helper: {e:#}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<()> {
+    let cli = Cli::parse();
+    let conn = open_conn(cli.db.as_deref(), cli.read_only, &cli.pragmas, &cli.extensions)?;
+    match cli.cmd {
+        Cmd::Query { sql, bind, columnar, with_meta, limit } => {
+            cmd_query(&conn, &sql, bind.as_deref(), columnar, with_meta, limit)
+        }
+        Cmd::Execute { sql, bind } => cmd_execute(&conn, &sql, bind.as_deref()),
+        Cmd::Exec { file } => cmd_exec_file(&conn, &file),
+        Cmd::Dump { source, columns, where_clause, order_by, limit } => {
+            cmd_dump(&conn, &source, columns.as_deref(), where_clause.as_deref(), order_by.as_deref(), limit)
+        }
+        Cmd::Import { path, table, kind, replace } => cmd_import(&conn, &path, &table, &kind, replace),
+        Cmd::Export { table, path, kind, compression } => cmd_export(&conn, &table, &path, &kind, &compression),
+        Cmd::Tables => cmd_tables(&conn),
+        Cmd::Schema { table } => cmd_schema(&conn, &table),
+        Cmd::Inspect => cmd_inspect(&conn, cli.db.as_deref()),
+        Cmd::Ping => cmd_ping(&conn),
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/* connection                                                                */
+/* ------------------------------------------------------------------------- */
+
+fn open_conn(
+    db: Option<&std::path::Path>,
+    read_only: bool,
+    pragmas: &[String],
+    extensions: &[String],
+) -> Result<Connection> {
+    let conn = match db {
+        Some(p) => {
+            if read_only {
+                Connection::open_with_flags(
+                    p,
+                    duckdb::Config::default()
+                        .access_mode(duckdb::AccessMode::ReadOnly)?,
+                )
+                .with_context(|| format!("opening {} (read-only)", p.display()))?
+            } else {
+                Connection::open(p).with_context(|| format!("opening {}", p.display()))?
+            }
+        }
+        None => Connection::open_in_memory().context("opening :memory:")?,
+    };
+    for ext in extensions {
+        let ext = ext.trim();
+        if ext.is_empty() {
+            continue;
+        }
+        conn.execute_batch(&format!("INSTALL {ext}; LOAD {ext};"))
+            .with_context(|| format!("loading extension {ext}"))?;
+    }
+    for kv in pragmas {
+        let kv = kv.trim();
+        if kv.is_empty() {
+            continue;
+        }
+        conn.execute_batch(&format!("SET {kv};"))
+            .with_context(|| format!("applying pragma {kv}"))?;
+    }
+    Ok(conn)
+}
+
+/* ------------------------------------------------------------------------- */
+/* binds                                                                     */
+/* ------------------------------------------------------------------------- */
+
+fn parse_bind(s: Option<&str>) -> Result<Vec<Value>> {
+    let Some(raw) = s else {
+        return Ok(Vec::new());
+    };
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(Vec::new());
+    }
+    let v: JsonValue = serde_json::from_str(raw).context("parsing --bind JSON")?;
+    match v {
+        JsonValue::Array(arr) => Ok(arr.into_iter().map(json_to_duckval).collect()),
+        JsonValue::Null => Ok(Vec::new()),
+        _ => bail!("--bind must be a JSON array"),
+    }
+}
+
+fn json_to_duckval(v: JsonValue) -> Value {
+    match v {
+        JsonValue::Null => Value::Null,
+        JsonValue::Bool(b) => Value::Boolean(b),
+        JsonValue::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Value::BigInt(i)
+            } else if let Some(u) = n.as_u64() {
+                Value::UBigInt(u)
+            } else if let Some(f) = n.as_f64() {
+                Value::Double(f)
+            } else {
+                Value::Text(n.to_string())
+            }
+        }
+        JsonValue::String(s) => Value::Text(s),
+        JsonValue::Array(_) | JsonValue::Object(_) => Value::Text(v.to_string()),
+    }
+}
+
+fn bind_refs<'a>(b: &'a [Value]) -> Vec<&'a dyn ToSql> {
+    b.iter().map(|v| v as &dyn ToSql).collect()
+}
+
+/* ------------------------------------------------------------------------- */
+/* row → JSON                                                                */
+/* ------------------------------------------------------------------------- */
+
+fn valref_to_json(v: ValueRef<'_>) -> JsonValue {
+    match v {
+        ValueRef::Null => JsonValue::Null,
+        ValueRef::Boolean(b) => JsonValue::Bool(b),
+        ValueRef::TinyInt(i) => json!(i),
+        ValueRef::SmallInt(i) => json!(i),
+        ValueRef::Int(i) => json!(i),
+        ValueRef::BigInt(i) => json!(i),
+        ValueRef::HugeInt(i) => JsonValue::String(i.to_string()),
+        ValueRef::UTinyInt(u) => json!(u),
+        ValueRef::USmallInt(u) => json!(u),
+        ValueRef::UInt(u) => json!(u),
+        ValueRef::UBigInt(u) => json!(u),
+        ValueRef::Float(f) => json!(f),
+        ValueRef::Double(f) => json!(f),
+        ValueRef::Decimal(d) => JsonValue::String(d.to_string()),
+        ValueRef::Timestamp(_unit, _ts) => JsonValue::String(format!("{:?}", v)),
+        ValueRef::Date32(d) => JsonValue::String(format!("date32:{d}")),
+        ValueRef::Time64(_unit, _t) => JsonValue::String(format!("{:?}", v)),
+        ValueRef::Interval { months, days, nanos } => json!({
+            "months": months,
+            "days": days,
+            "nanos": nanos,
+        }),
+        ValueRef::Text(s) => {
+            JsonValue::String(String::from_utf8_lossy(s).into_owned())
+        }
+        ValueRef::Blob(b) => {
+            let mut out = String::from("base64:");
+            out.push_str(&B64.encode(b));
+            JsonValue::String(out)
+        }
+        // List/Array/Struct/Map/Enum come back via `Value::List(...)` etc.
+        // when called through `row.get::<_, Value>(idx)`; ValueRef variants
+        // for those aren't trivially traversable, so we fall back to debug.
+        other => JsonValue::String(format!("{:?}", other)),
+    }
+}
+
+fn row_to_json(row: &duckdb::Row<'_>, column_names: &[String]) -> Result<JsonValue> {
+    let mut out = JMap::with_capacity(column_names.len());
+    for (i, name) in column_names.iter().enumerate() {
+        let vr = row.get_ref(i).map_err(|e| anyhow!("col {i}: {e}"))?;
+        out.insert(name.clone(), valref_to_json(vr));
+    }
+    Ok(JsonValue::Object(out))
+}
+
+fn row_to_array(row: &duckdb::Row<'_>, ncols: usize) -> Result<Vec<JsonValue>> {
+    let mut out = Vec::with_capacity(ncols);
+    for i in 0..ncols {
+        let vr = row.get_ref(i).map_err(|e| anyhow!("col {i}: {e}"))?;
+        out.push(valref_to_json(vr));
+    }
+    Ok(out)
+}
+
+/* ------------------------------------------------------------------------- */
+/* commands                                                                  */
+/* ------------------------------------------------------------------------- */
+
+fn cmd_query(
+    conn: &Connection,
+    sql: &str,
+    bind: Option<&str>,
+    columnar: bool,
+    with_meta: bool,
+    limit: Option<usize>,
+) -> Result<()> {
+    // Use DuckDB's Arrow result iterator — robust schema metadata
+    // (sidesteps a panic we hit going through `Statement::column_names`
+    // on a prepared-but-unexecuted statement in duckdb 1.10502).
+    use arrow_json::writer::{LineDelimited, WriterBuilder as JsonWriterBuilder};
+
+    let binds = parse_bind(bind)?;
+    let bind_refs = bind_refs(&binds);
+    let mut stmt = conn.prepare(sql).context("prepare")?;
+    let mut arrow_iter = stmt
+        .query_arrow(&bind_refs[..])
+        .context("query_arrow")?;
+    let schema = arrow_iter.get_schema();
+    let columns: Vec<String> = schema
+        .fields()
+        .iter()
+        .map(|f| f.name().clone())
+        .collect();
+
+    let stdout = io::stdout();
+    let mut out = BufWriter::new(stdout.lock());
+
+    if columnar {
+        let mut emitted_rows: usize = 0;
+        let mut payload: Vec<arrow::array::RecordBatch> = Vec::new();
+        for batch in arrow_iter.by_ref() {
+            let remaining = limit
+                .map(|l| l.saturating_sub(emitted_rows))
+                .unwrap_or(usize::MAX);
+            if remaining == 0 {
+                break;
+            }
+            let batch = if batch.num_rows() > remaining {
+                batch.slice(0, remaining)
+            } else {
+                batch
+            };
+            emitted_rows += batch.num_rows();
+            payload.push(batch);
+            if limit.is_some_and(|l| emitted_rows >= l) {
+                break;
+            }
+        }
+        let mut row_buf: Vec<u8> = Vec::with_capacity(emitted_rows * 64);
+        {
+            let mut w = JsonWriterBuilder::new()
+                .with_explicit_nulls(true)
+                .build::<_, LineDelimited>(&mut row_buf);
+            for b in &payload {
+                w.write(b)?;
+            }
+            w.finish()?;
+        }
+        let mut rows_arr: Vec<Vec<JsonValue>> = Vec::with_capacity(emitted_rows);
+        for line in row_buf.split(|b| *b == b'\n') {
+            if line.is_empty() {
+                continue;
+            }
+            let mut row: serde_json::Map<String, JsonValue> = serde_json::from_slice(line)?;
+            let arr: Vec<JsonValue> = columns
+                .iter()
+                .map(|c| row.remove(c).unwrap_or(JsonValue::Null))
+                .collect();
+            rows_arr.push(arr);
+        }
+        let obj = json!({
+            "columns": columns,
+            "num_rows": rows_arr.len(),
+            "rows": rows_arr,
+        });
+        serde_json::to_writer(&mut out, &obj)?;
+        out.write_all(b"\n")?;
+    } else {
+        if with_meta {
+            let meta = json!({ "meta": { "columns": columns } });
+            serde_json::to_writer(&mut out, &meta)?;
+            out.write_all(b"\n")?;
+        }
+        let mut writer = JsonWriterBuilder::new()
+            .with_explicit_nulls(true)
+            .build::<_, LineDelimited>(&mut out);
+        let mut emitted: usize = 0;
+        for batch in arrow_iter.by_ref() {
+            let remaining = limit
+                .map(|l| l.saturating_sub(emitted))
+                .unwrap_or(usize::MAX);
+            if remaining == 0 {
+                break;
+            }
+            let batch = if batch.num_rows() > remaining {
+                batch.slice(0, remaining)
+            } else {
+                batch
+            };
+            writer.write(&batch)?;
+            emitted += batch.num_rows();
+            if limit.is_some_and(|l| emitted >= l) {
+                break;
+            }
+        }
+        writer.finish()?;
+    }
+    out.flush()?;
+    Ok(())
+}
+
+fn cmd_execute(conn: &Connection, sql: &str, bind: Option<&str>) -> Result<()> {
+    let binds = parse_bind(bind)?;
+    let bind_refs = bind_refs(&binds);
+    let n = conn.execute(sql, &bind_refs[..]).context("execute")?;
+    emit_json(&json!({ "affected_rows": n }))
+}
+
+fn cmd_exec_file(conn: &Connection, file: &PathBuf) -> Result<()> {
+    let raw = std::fs::read_to_string(file)
+        .with_context(|| format!("reading {}", file.display()))?;
+    conn.execute_batch(&raw).context("execute_batch")?;
+    emit_json(&json!({ "ok": true }))
+}
+
+fn cmd_dump(
+    conn: &Connection,
+    source: &str,
+    columns: Option<&str>,
+    where_clause: Option<&str>,
+    order_by: Option<&str>,
+    limit: Option<usize>,
+) -> Result<()> {
+    let cols = columns.unwrap_or("*");
+    let from = if looks_like_path_or_url(source) {
+        format!("'{}'", source.replace('\'', "''"))
+    } else {
+        // Bare identifier. Quote as a DuckDB identifier.
+        format!("\"{}\"", source.replace('"', "\"\""))
+    };
+    let mut sql = format!("SELECT {cols} FROM {from}");
+    if let Some(w) = where_clause {
+        sql.push_str(" WHERE ");
+        sql.push_str(w);
+    }
+    if let Some(o) = order_by {
+        sql.push_str(" ORDER BY ");
+        sql.push_str(o);
+    }
+    if let Some(n) = limit {
+        sql.push_str(&format!(" LIMIT {n}"));
+    }
+    cmd_query(conn, &sql, None, false, false, None)
+}
+
+fn looks_like_path_or_url(s: &str) -> bool {
+    s.contains('/')
+        || s.contains('\\')
+        || s.starts_with("http://")
+        || s.starts_with("https://")
+        || s.starts_with("s3://")
+        || s.starts_with("gs://")
+        || s.ends_with(".parquet")
+        || s.ends_with(".csv")
+        || s.ends_with(".tsv")
+        || s.ends_with(".json")
+        || s.ends_with(".jsonl")
+        || s.ends_with(".ndjson")
+}
+
+fn cmd_import(
+    conn: &Connection,
+    path: &PathBuf,
+    table: &str,
+    kind: &str,
+    replace: bool,
+) -> Result<()> {
+    if replace {
+        conn.execute_batch(&format!("DROP TABLE IF EXISTS {};", quote_ident(table)))
+            .context("drop table")?;
+    }
+    let path_lit = format!("'{}'", path.display().to_string().replace('\'', "''"));
+    let select_expr = match kind.to_ascii_lowercase().as_str() {
+        "parquet" => format!("SELECT * FROM read_parquet({path_lit})"),
+        "csv" => format!("SELECT * FROM read_csv_auto({path_lit})"),
+        "json" | "ndjson" => format!("SELECT * FROM read_json_auto({path_lit})"),
+        "auto" | "" => format!("SELECT * FROM {path_lit}"),
+        other => bail!("unknown --kind `{other}` (parquet|csv|json|auto)"),
+    };
+    let sql = format!(
+        "CREATE TABLE {} AS {select_expr};",
+        quote_ident(table),
+    );
+    conn.execute_batch(&sql).context("import statement")?;
+    let count: i64 = conn
+        .query_row(
+            &format!("SELECT COUNT(*) FROM {}", quote_ident(table)),
+            [],
+            |r| r.get(0),
+        )
+        .context("count after import")?;
+    emit_json(&json!({
+        "table": table,
+        "kind": kind,
+        "source": path.display().to_string(),
+        "num_rows": count,
+    }))
+}
+
+fn cmd_export(
+    conn: &Connection,
+    table: &str,
+    path: &PathBuf,
+    kind: &str,
+    compression: &str,
+) -> Result<()> {
+    let path_lit = format!("'{}'", path.display().to_string().replace('\'', "''"));
+    let copy_opts = match kind.to_ascii_lowercase().as_str() {
+        "parquet" => format!("(FORMAT 'parquet', COMPRESSION '{}')", compression.replace('\'', "''")),
+        "csv" => "(FORMAT 'csv', HEADER TRUE)".to_string(),
+        "json" | "ndjson" => "(FORMAT 'json')".to_string(),
+        other => bail!("unknown --kind `{other}` (parquet|csv|json)"),
+    };
+    let sql = format!(
+        "COPY {} TO {path_lit} {copy_opts};",
+        quote_ident(table),
+    );
+    conn.execute_batch(&sql).context("export statement")?;
+    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    emit_json(&json!({
+        "table": table,
+        "kind": kind,
+        "path": path.display().to_string(),
+        "file_size": size,
+    }))
+}
+
+fn cmd_tables(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "SELECT table_name, table_schema FROM information_schema.tables \
+         WHERE table_schema NOT IN ('pg_catalog','information_schema') \
+         ORDER BY table_schema, table_name",
+    )?;
+    let mut rows = stmt.query([])?;
+    let stdout = io::stdout();
+    let mut out = BufWriter::new(stdout.lock());
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(0)?;
+        let schema: String = row.get(1)?;
+        serde_json::to_writer(
+            &mut out,
+            &json!({ "name": name, "schema": schema }),
+        )?;
+        out.write_all(b"\n")?;
+    }
+    Ok(())
+}
+
+fn cmd_schema(conn: &Connection, table: &str) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "SELECT column_name, data_type, is_nullable, column_default, ordinal_position \
+         FROM information_schema.columns \
+         WHERE table_name = ? \
+         ORDER BY ordinal_position",
+    )?;
+    let mut rows = stmt.query([table])?;
+    let mut cols: Vec<JsonValue> = Vec::new();
+    while let Some(row) = rows.next()? {
+        cols.push(json!({
+            "name": row.get::<_, String>(0)?,
+            "type": row.get::<_, String>(1)?,
+            "nullable": row.get::<_, String>(2)? == "YES",
+            "default": row.get::<_, Option<String>>(3)?,
+            "ordinal_position": row.get::<_, i32>(4)?,
+        }));
+    }
+    if cols.is_empty() {
+        bail!("table `{table}` not found in current database");
+    }
+    let row_count: Option<i64> = conn
+        .query_row(
+            &format!("SELECT COUNT(*) FROM {}", quote_ident(table)),
+            [],
+            |r| r.get(0),
+        )
+        .ok();
+    emit_json(&json!({
+        "table": table,
+        "num_rows": row_count,
+        "columns": cols,
+    }))
+}
+
+fn cmd_inspect(conn: &Connection, db_path: Option<&std::path::Path>) -> Result<()> {
+    let version: String = conn
+        .query_row("SELECT version()", [], |r| r.get(0))
+        .context("version()")?;
+    let db_size = db_path
+        .and_then(|p| std::fs::metadata(p).ok().map(|m| m.len()))
+        .unwrap_or(0);
+    let mut stmt = conn.prepare(
+        "SELECT database_name, type FROM duckdb_databases() ORDER BY database_name",
+    )?;
+    let mut rows = stmt.query([])?;
+    let mut dbs: Vec<JsonValue> = Vec::new();
+    while let Some(row) = rows.next()? {
+        dbs.push(json!({
+            "name": row.get::<_, String>(0)?,
+            "type": row.get::<_, String>(1)?,
+        }));
+    }
+    emit_json(&json!({
+        "version": version,
+        "file": db_path.map(|p| p.display().to_string()),
+        "file_size": db_size,
+        "databases": dbs,
+    }))
+}
+
+fn cmd_ping(conn: &Connection) -> Result<()> {
+    let n: i32 = conn
+        .query_row("SELECT 1", [], |r| r.get(0))
+        .context("SELECT 1")?;
+    println!("ok ({n})");
+    Ok(())
+}
+
+/* ------------------------------------------------------------------------- */
+/* helpers                                                                   */
+/* ------------------------------------------------------------------------- */
+
+fn quote_ident(s: &str) -> String {
+    format!("\"{}\"", s.replace('"', "\"\""))
+}
+
+fn emit_json<T: serde::Serialize>(v: &T) -> Result<()> {
+    let stdout = io::stdout();
+    let mut w = BufWriter::new(stdout.lock());
+    serde_json::to_writer(&mut w, v)?;
+    w.write_all(b"\n")?;
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn _force_link() -> BufReader<&'static [u8]> {
+    BufReader::new(&[])
+}
+#[allow(dead_code)]
+fn _force_bufread<R: BufRead>(_: R) {}

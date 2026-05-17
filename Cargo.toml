@@ -17,6 +17,8 @@ path = "src/main.rs"
 # system .so. Adds ~3-5 minutes to a cold build; cargo caches the
 # artifact after that.
 duckdb = { version = "1", features = ["bundled", "json", "parquet"] }
+arrow = "58"
+arrow-json = "58"
 clap = { version = "4", default-features = false, features = [
     "std", "derive", "help", "usage", "error-context", "env",
 ] }

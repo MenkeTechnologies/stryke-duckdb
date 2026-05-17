@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --all-targets --locked
+
+  test:
+    name: Test
+    runs-on: ${{ matrix.os }}
+    env:
+      RUST_BACKTRACE: 1
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked --no-fail-fast
+
+  helper-round-trip:
+    name: Helper round-trip (in-memory + file db)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked
+      - name: query / bind / file db
+        run: |
+          set -euo pipefail
+          H=./target/release/stryke-duckdb-helper
+          $H ping | grep -x 'ok (1)'
+          $H query "SELECT 1+1 AS two, 'hi' AS s" | jq -e '.two == 2 and .s == "hi"'
+          $H query "SELECT ?::INT + ?::INT AS r" --bind='[10,32]' | jq -e '.r == 42'
+          $H query "SELECT n FROM range(5) AS r(n)" --columnar | jq -e '.num_rows == 5'
+
+          DB=/tmp/ci.duckdb
+          $H --db "$DB" execute "CREATE TABLE t (id INT, name VARCHAR)" | jq -e '.affected_rows == 0'
+          $H --db "$DB" execute "INSERT INTO t VALUES (1,'a'),(2,'b'),(3,'c')" | jq -e '.affected_rows == 3'
+          $H --db "$DB" query "SELECT COUNT(*) FROM t" | jq -e '."count_star()" == 3'
+          $H --db "$DB" tables | jq -e '.name == "t"'
+          $H --db "$DB" schema --table=t | jq -e '.columns | length == 2'
+          $H --db "$DB" inspect | jq -e '.file_size > 0'
+
+  doc:
+    name: Doc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --locked
+
+  release-build:
+    name: Release Build (${{ matrix.target }})
+    needs: [check, test, helper-round-trip]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stryke-duckdb-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/stryke-duckdb-helper

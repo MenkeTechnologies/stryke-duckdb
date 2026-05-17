@@ -1,0 +1,8 @@
+/target
+/tmp
+*.duckdb
+*.duckdb.wal
+*.parquet
+
+# Track Cargo.lock for binary crates — overrides ~/.gitignore_global *.lock.
+!Cargo.lock

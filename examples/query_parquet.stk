@@ -1,0 +1,24 @@
+#!/usr/bin/env stryke
+# examples/query_parquet.stk — query a parquet file with SQL, no import.
+# Run:   s examples/query_parquet.stk /path/to/file.parquet
+
+use DuckDB
+
+my $path = $ARGV[0]
+die "usage: query_parquet.stk PATH.parquet\n" unless defined $path
+die "not found: $path\n" unless -e $path
+
+p "row count:"
+p DuckDB::query_scalar("SELECT COUNT(*) FROM '$path'")
+
+p "\nfirst 5 rows (any schema):"
+my @rows = DuckDB::query("SELECT * FROM '$path' LIMIT 5")
+for my $r (@rows) {
+    p to_json $r
+}
+
+p "\nschema:"
+my @cols = DuckDB::query("DESCRIBE SELECT * FROM '$path'")
+for my $c (@cols) {
+    p sprintf("  %-30s %s", $c->{column_name}, $c->{column_type})
+}

@@ -1,0 +1,101 @@
+# t/test_duckdb.stk — self-contained round-trip via in-memory DuckDB.
+
+require "./lib/DuckDB.stk"
+
+my $have_helper = eval { DuckDB::helper_path(); 1 }
+unless ($have_helper) {
+    p "1..0 # SKIP helper not built — run `cargo build --release` first"
+    exit 0
+}
+
+p "1..9"
+my $i = 0
+
+# 1. ping
+$i++
+p (DuckDB::ping() ? "ok $i - ping" : "not ok $i - ping false")
+
+# 2. plain SELECT (constants)
+my @r
+eval { @r = DuckDB::query("SELECT 1+1 AS two, 'hi' AS s") }
+$i++
+p $@ ? "not ok $i - query const: $@" :
+       (len(@r) == 1 && $r[0]->{two} == 2 && $r[0]->{s} eq "hi"
+            ? "ok $i - query const"
+            : "not ok $i - query const wrong: " . to_json(\@r))
+
+# 3. range table-valued function
+eval { @r = DuckDB::query("SELECT n FROM range(5) AS r(n)") }
+$i++
+p $@ ? "not ok $i - range: $@" :
+       (len(@r) == 5 && $r[0]->{n} == 0 && $r[4]->{n} == 4
+            ? "ok $i - range"
+            : "not ok $i - range wrong")
+
+# 4. positional bind
+eval { @r = DuckDB::query("SELECT ?::INT + ?::INT AS r", bind => [10, 32]) }
+$i++
+p $@ ? "not ok $i - bind: $@" :
+       ($r[0]->{r} == 42 ? "ok $i - bind" : "not ok $i - bind wrong")
+
+# 5. query_scalar
+my $n
+eval { $n = DuckDB::query_scalar("SELECT COUNT(*) FROM range(1000)") }
+$i++
+p $@ ? "not ok $i - query_scalar: $@" :
+       ($n == 1000 ? "ok $i - query_scalar" : "not ok $i - query_scalar=$n")
+
+# 6. columnar
+my $cw
+eval {
+    $cw = DuckDB::query(
+        "SELECT id, name FROM (VALUES (1,'a'),(2,'b'),(3,'c')) AS t(id,name)",
+        columnar => 1,
+    )
+}
+$i++
+p $@ ? "not ok $i - columnar: $@" :
+       ($cw->{num_rows} == 3 && len(@{$cw->{rows}}) == 3
+            ? "ok $i - columnar"
+            : "not ok $i - columnar bad shape")
+
+# 7. CTAS round-trip on a persistent file db. Use inline `db => $tmpdb`
+# args rather than `%db` spread — stryke's `eval { fn(…, %hash) }` drops
+# the hash spread (caught while writing this test; tracked separately).
+my $tmpdb = "/tmp/stryke-duckdb-test-$$.duckdb"
+my $r
+eval {
+    DuckDB::execute("CREATE TABLE t (id INT, name VARCHAR)", db => $tmpdb)
+    DuckDB::execute("INSERT INTO t VALUES (1,'alice'),(2,'bob'),(3,'charlie')", db => $tmpdb)
+    $r = DuckDB::query_scalar("SELECT COUNT(*) FROM t", db => $tmpdb)
+}
+$i++
+p $@ ? "not ok $i - file db CTAS: $@" :
+       ($r == 3 ? "ok $i - file db CTAS" : "not ok $i - file db count=$r")
+
+# 8. inspect on file db
+my $info
+eval { $info = DuckDB::inspect(db => $tmpdb) }
+$i++
+p $@ ? "not ok $i - inspect: $@" :
+       ($info->{file} eq $tmpdb && $info->{file_size} > 0
+            ? "ok $i - inspect"
+            : "not ok $i - inspect bad shape")
+
+# 9. tables list
+my @tlist
+eval { @tlist = DuckDB::tables(db => $tmpdb) }
+$i++
+if ($@) {
+    p "not ok $i - tables: $@"
+} else {
+    my $found = 0
+    for my $t (@tlist) {
+        $found = 1 if $t->{name} eq "t"
+    }
+    p ($found ? "ok $i - tables (found t)"
+              : "not ok $i - tables missing t (saw " . len(@tlist) . ")")
+}
+
+unlink $tmpdb if -e $tmpdb
+unlink "$tmpdb.wal" if -e "$tmpdb.wal"
