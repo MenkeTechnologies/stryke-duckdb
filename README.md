@@ -1,12 +1,46 @@
-# stryke-duckdb
+```
+ ███████╗████████╗██████╗ ██╗   ██╗██╗  ██╗███████╗
+ ██╔════╝╚══██╔══╝██╔══██╗╚██╗ ██╔╝██║ ██╔╝██╔════╝
+ ███████╗   ██║   ██████╔╝ ╚████╔╝ █████╔╝ █████╗
+ ╚════██║   ██║   ██╔══██╗  ╚██╔╝  ██╔═██╗ ██╔══╝
+ ███████║   ██║   ██║  ██║   ██║   ██║  ██╗███████╗
+ ╚══════╝   ╚═╝   ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚══════╝
+                   [ d u c k d b ]
+```
+
+[![CI](https://github.com/MenkeTechnologies/stryke-duckdb/actions/workflows/ci.yml/badge.svg)](https://github.com/MenkeTechnologies/stryke-duckdb/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![stryke](https://img.shields.io/badge/stryke-package-cyan.svg)](https://github.com/MenkeTechnologies/strykelang)
+
+### `[EMBEDDED DUCKDB SQL ENGINE FOR STRYKE // DIRECT-QUERY PARQUET / CSV / JSON]`
+
+> *"No import step. No schema. Just SQL."*
 
 Embedded DuckDB SQL engine for stryke. Direct-query parquet / CSV / JSON
 from disk or URL without loading, persistent `.duckdb` files when you
 need them, full standard SQL on top. Opt-in package tier.
 
-Created by MenkeTechnologies.
+### [`strykelang`](https://github.com/MenkeTechnologies/strykelang) &middot; [`MenkeTechnologiesMeta`](https://github.com/MenkeTechnologies/MenkeTechnologiesMeta) · [`stryke-arrow`](https://github.com/MenkeTechnologies/stryke-arrow) · [`stryke-parquet`](https://github.com/MenkeTechnologies/stryke-parquet) · [`stryke-postgres`](https://github.com/MenkeTechnologies/stryke-postgres) · [`stryke-demo`](https://github.com/MenkeTechnologies/stryke-demo)
 
-## Why this is one of the most useful stryke packages
+---
+
+## Table of Contents
+
+- [\[0x00\] Why this is one of the most useful stryke packages](#0x00-why-this-is-one-of-the-most-useful-stryke-packages)
+- [\[0x01\] Install](#0x01-install)
+- [\[0x02\] Quick start](#0x02-quick-start)
+- [\[0x03\] CLI: `duck`](#0x03-cli-duck)
+- [\[0x04\] API reference](#0x04-api-reference)
+- [\[0x05\] Helper protocol](#0x05-helper-protocol)
+- [\[0x06\] Tests](#0x06-tests)
+- [\[0x07\] DuckDB type encoding](#0x07-duckdb-type-encoding)
+- [\[0x08\] Dev workflow](#0x08-dev-workflow)
+- [\[0x09\] Layout](#0x09-layout)
+- [\[0xFF\] License](#0xff-license)
+
+---
+
+## [0x00] Why this is one of the most useful stryke packages
 
 DuckDB is an in-process analytical SQL engine. With this package, a
 stryke one-liner gets:
@@ -26,7 +60,7 @@ Pairs cleanly with [stryke-arrow](../stryke-arrow) (data pipeline) and
 "now what do I do with this data" loop — runs SQL on the file you just
 inspected.
 
-## Install
+## [0x01] Install
 
 ```sh
 cd ~/projects/stryke-duckdb
@@ -40,7 +74,7 @@ Or:
 make install
 ```
 
-## Quick start
+## [0x02] Quick start
 
 ```stryke
 use DuckDB
@@ -86,7 +120,7 @@ DuckDB::query_stream "SELECT * FROM events",
     callback => sub ($row) { process $row }
 ```
 
-## CLI: `duck`
+## [0x03] CLI: `duck`
 
 ```sh
 duck query    "SELECT * FROM 'events.parquet' LIMIT 10"
@@ -122,7 +156,7 @@ spatial   geospatial functions
 excel     .xlsx reader
 ```
 
-## API reference
+## [0x04] API reference
 
 ### Read paths
 
@@ -168,7 +202,7 @@ DuckDB::ensure_built()  → $abs_path
 DuckDB::version()       → "stryke-duckdb-helper 0.1.0"
 ```
 
-## Helper protocol
+## [0x05] Helper protocol
 
 ```sh
 stryke-duckdb-helper query "SELECT 1+1"
@@ -186,7 +220,7 @@ Output:
 * `tables` → NDJSON `{name, schema}`
 * `schema`, `inspect`, `ping` → single JSON object / line
 
-## Tests
+## [0x06] Tests
 
 ```sh
 cargo test                   # compiles, no live calls
@@ -197,7 +231,7 @@ Self-contained — no external service required. Tests cover in-memory
 queries, positional binds, columnar output, persistent-file CTAS round
 trip, and metadata introspection.
 
-## DuckDB type encoding
+## [0x07] DuckDB type encoding
 
 Output JSON is produced via the Arrow result iterator, so types match
 [stryke-arrow](../stryke-arrow):
@@ -221,7 +255,7 @@ Output JSON is produced via the Arrow result iterator, so types match
 | `UUID` | string |
 | `NULL` | null |
 
-## Dev workflow
+## [0x08] Dev workflow
 
 ```sh
 make             # release build (first time: ~3-5 min for libduckdb)
@@ -231,7 +265,7 @@ make install
 make clean
 ```
 
-## Layout
+## [0x09] Layout
 
 ```
 stryke-duckdb/
@@ -255,6 +289,6 @@ stryke-duckdb/
     release.yml                    # cross-compile + GH release on tag push
 ```
 
-## License
+## [0xFF] License
 
 MIT.
