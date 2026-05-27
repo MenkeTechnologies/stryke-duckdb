@@ -1156,4 +1156,53 @@ mod tests {
     fn looks_like_path_or_url_relative_dot_slash() {
         assert!(looks_like_path_or_url("./data.parquet"));
     }
+
+    #[test]
+    fn valref_to_json_real_as_float() {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut stmt = conn.prepare("SELECT CAST(1.25 AS REAL) AS r").unwrap();
+        let mut rows = stmt.query([]).unwrap();
+        let row = rows.next().unwrap().unwrap();
+        assert_eq!(valref_to_json(row.get_ref(0).unwrap()), json!(1.25));
+    }
+
+    #[test]
+    fn json_to_duckval_zero_int() {
+        assert!(matches!(json_to_duckval(json!(0)), Value::BigInt(0)));
+    }
+
+    #[test]
+    fn looks_like_path_or_url_s3_scheme() {
+        assert!(looks_like_path_or_url("s3://bucket/key.parquet"));
+    }
+
+    #[test]
+    fn parse_bind_single_int() {
+        assert!(matches!(parse_bind(Some("[7]")).unwrap()[0], Value::BigInt(7)));
+    }
+
+    #[test]
+    fn quote_ident_space_in_name() {
+        assert_eq!(quote_ident("col name"), "\"col name\"");
+    }
+
+    #[test]
+    fn row_to_json_single_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut stmt = conn.prepare("SELECT 3 AS x").unwrap();
+        let mut rows = stmt.query([]).unwrap();
+        let row = rows.next().unwrap().unwrap();
+        assert_eq!(row_to_json(row, &["x".into()]).unwrap()["x"], json!(3));
+    }
+
+    #[test]
+    fn bind_refs_single_element() {
+        let v = parse_bind(Some("[1]")).unwrap();
+        assert_eq!(bind_refs(&v).len(), 1);
+    }
+
+    #[test]
+    fn looks_like_path_or_url_not_plain_identifier() {
+        assert!(!looks_like_path_or_url("my_table"));
+    }
 }
