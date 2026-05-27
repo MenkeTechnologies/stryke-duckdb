@@ -665,3 +665,225 @@ fn _force_link() -> BufReader<&'static [u8]> {
 }
 #[allow(dead_code)]
 fn _force_bufread<R: BufRead>(_: R) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── parse_bind ──────────────────────────────────────────────────
+
+    #[test]
+    fn parse_bind_none_empty() {
+        assert!(parse_bind(None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_bind_blank_string_empty() {
+        assert!(parse_bind(Some("")).unwrap().is_empty());
+        assert!(parse_bind(Some("   ")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_bind_null_treated_as_empty() {
+        // The impl maps JSON null → empty Vec (defensive against `--bind null`).
+        assert!(parse_bind(Some("null")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_bind_array_of_scalars() {
+        let v = parse_bind(Some(r#"[1, "two", true, null]"#)).unwrap();
+        assert_eq!(v.len(), 4);
+        assert!(matches!(v[0], Value::BigInt(1)));
+        assert!(matches!(v[1], Value::Text(ref s) if s == "two"));
+        assert!(matches!(v[2], Value::Boolean(true)));
+        assert!(matches!(v[3], Value::Null));
+    }
+
+    #[test]
+    fn parse_bind_non_array_rejected() {
+        let err = parse_bind(Some(r#"{"k":1}"#)).unwrap_err();
+        assert!(format!("{err}").contains("array"));
+    }
+
+    #[test]
+    fn parse_bind_invalid_json_errors() {
+        let err = parse_bind(Some("not json")).unwrap_err();
+        assert!(format!("{err}").to_lowercase().contains("parsing"));
+    }
+
+    // ─── json_to_duckval ─────────────────────────────────────────────
+
+    #[test]
+    fn json_to_duckval_null() {
+        assert!(matches!(json_to_duckval(JsonValue::Null), Value::Null));
+    }
+
+    #[test]
+    fn json_to_duckval_bool() {
+        assert!(matches!(json_to_duckval(json!(true)), Value::Boolean(true)));
+        assert!(matches!(json_to_duckval(json!(false)), Value::Boolean(false)));
+    }
+
+    #[test]
+    fn json_to_duckval_positive_int_is_bigint() {
+        // i64::as_i64 wins for positive ints in safe range.
+        assert!(matches!(json_to_duckval(json!(42)), Value::BigInt(42)));
+        assert!(matches!(json_to_duckval(json!(-5)), Value::BigInt(-5)));
+    }
+
+    #[test]
+    fn json_to_duckval_large_unsigned_is_ubigint() {
+        // Value above i64::MAX falls through as_i64 → as_u64.
+        let big: u64 = i64::MAX as u64 + 1;
+        match json_to_duckval(json!(big)) {
+            Value::UBigInt(u) => assert_eq!(u, big),
+            other => panic!("expected UBigInt, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn json_to_duckval_float_is_double() {
+        match json_to_duckval(json!(2.5)) {
+            Value::Double(f) => assert_eq!(f, 2.5),
+            other => panic!("expected Double, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn json_to_duckval_string_is_text() {
+        match json_to_duckval(json!("hi")) {
+            Value::Text(s) => assert_eq!(s, "hi"),
+            other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn json_to_duckval_array_serialized_to_text() {
+        // Container types get serialized so the bind survives unchanged.
+        match json_to_duckval(json!([1, 2, 3])) {
+            Value::Text(s) => assert_eq!(s, "[1,2,3]"),
+            other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn json_to_duckval_object_serialized_to_text() {
+        match json_to_duckval(json!({"k": 1})) {
+            Value::Text(s) => assert_eq!(s, "{\"k\":1}"),
+            other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
+    // ─── looks_like_path_or_url ──────────────────────────────────────
+
+    #[test]
+    fn looks_like_path_or_url_positive_cases() {
+        assert!(looks_like_path_or_url("./local.parquet"));
+        assert!(looks_like_path_or_url("/abs/path.csv"));
+        assert!(looks_like_path_or_url("relative/data.json"));
+        assert!(looks_like_path_or_url("C:\\windows\\file.tsv"));
+        assert!(looks_like_path_or_url("https://x.com/d.parquet"));
+        assert!(looks_like_path_or_url("http://x.com/d.csv"));
+        assert!(looks_like_path_or_url("s3://bucket/key.csv"));
+        assert!(looks_like_path_or_url("gs://bucket/key"));
+        assert!(looks_like_path_or_url("foo.ndjson"));
+        assert!(looks_like_path_or_url("foo.jsonl"));
+    }
+
+    #[test]
+    fn looks_like_path_or_url_negative_cases() {
+        // Bare table name with no '/', no '\', no extension.
+        assert!(!looks_like_path_or_url("my_table"));
+        assert!(!looks_like_path_or_url("schema_dot_table"));
+        assert!(!looks_like_path_or_url(""));
+        assert!(!looks_like_path_or_url("SELECT"));
+    }
+
+    // ─── quote_ident ─────────────────────────────────────────────────
+
+    #[test]
+    fn quote_ident_wraps_in_double_quotes() {
+        assert_eq!(quote_ident("users"), "\"users\"");
+    }
+
+    #[test]
+    fn quote_ident_doubles_internal_double_quotes() {
+        // SQL identifier escaping: " → ""
+        assert_eq!(quote_ident("a\"b"), "\"a\"\"b\"");
+    }
+
+    #[test]
+    fn quote_ident_preserves_dots_spaces_unicode() {
+        // Identifier quoting doesn't touch anything other than embedded `"`.
+        assert_eq!(quote_ident("my.schema"), "\"my.schema\"");
+        assert_eq!(quote_ident("with space"), "\"with space\"");
+        assert_eq!(quote_ident("日本語"), "\"日本語\"");
+    }
+
+    #[test]
+    fn quote_ident_empty_string_still_quoted() {
+        assert_eq!(quote_ident(""), "\"\"");
+    }
+
+    // ─── bind_refs ───────────────────────────────────────────────────
+
+    #[test]
+    fn bind_refs_count_matches_input() {
+        let binds = vec![Value::BigInt(1), Value::Text("x".into()), Value::Null];
+        let refs = bind_refs(&binds);
+        assert_eq!(refs.len(), 3);
+    }
+
+    // ─── valref_to_json (via in-memory query) ────────────────────────
+
+    #[test]
+    fn valref_to_json_scalar_round_trip() {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT 1::INTEGER, 'hi'::VARCHAR, TRUE, NULL, 2.5::DOUBLE")
+            .unwrap();
+        let mut rows = stmt.query([]).unwrap();
+        let row = rows.next().unwrap().unwrap();
+        let arr = row_to_array(row, 5).unwrap();
+        assert_eq!(arr[0], json!(1));
+        assert_eq!(arr[1], json!("hi"));
+        assert_eq!(arr[2], json!(true));
+        assert_eq!(arr[3], JsonValue::Null);
+        assert_eq!(arr[4], json!(2.5));
+    }
+
+    #[test]
+    fn valref_to_json_bigint_emits_number() {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut stmt = conn.prepare("SELECT 9999999999::BIGINT").unwrap();
+        let mut rows = stmt.query([]).unwrap();
+        let row = rows.next().unwrap().unwrap();
+        let v = valref_to_json(row.get_ref(0).unwrap());
+        assert_eq!(v, json!(9999999999i64));
+    }
+
+    #[test]
+    fn valref_to_json_blob_base64_prefixed() {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut stmt = conn.prepare("SELECT 'abc'::BLOB").unwrap();
+        let mut rows = stmt.query([]).unwrap();
+        let row = rows.next().unwrap().unwrap();
+        let v = valref_to_json(row.get_ref(0).unwrap());
+        let s = v.as_str().unwrap();
+        assert!(s.starts_with("base64:"));
+        let decoded = B64.decode(s.strip_prefix("base64:").unwrap()).unwrap();
+        assert_eq!(decoded, b"abc");
+    }
+
+    #[test]
+    fn row_to_json_named_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut stmt = conn.prepare("SELECT 7 AS a, 'x' AS b").unwrap();
+        let mut rows = stmt.query([]).unwrap();
+        let row = rows.next().unwrap().unwrap();
+        let names = vec!["a".to_string(), "b".to_string()];
+        let v = row_to_json(row, &names).unwrap();
+        assert_eq!(v["a"], json!(7));
+        assert_eq!(v["b"], json!("x"));
+    }
+}
