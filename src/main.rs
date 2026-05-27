@@ -1205,4 +1205,50 @@ mod tests {
     fn looks_like_path_or_url_not_plain_identifier() {
         assert!(!looks_like_path_or_url("my_table"));
     }
+
+    #[test]
+    fn json_to_duckval_large_u64_ubigint() {
+        assert!(matches!(
+            json_to_duckval(json!(u64::MAX)),
+            Value::UBigInt(_),
+        ));
+    }
+
+    #[test]
+    fn looks_like_path_or_url_windows_path() {
+        assert!(looks_like_path_or_url(r"C:\data\file.parquet"));
+    }
+
+    #[test]
+    fn parse_bind_two_ints() {
+        let v = parse_bind(Some("[1,2]")).unwrap();
+        assert_eq!(v.len(), 2);
+    }
+
+    #[test]
+    fn quote_ident_reserved_keyword() {
+        assert_eq!(quote_ident("select"), "\"select\"");
+    }
+
+    #[test]
+    fn row_to_json_two_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut stmt = conn.prepare("SELECT 1 AS a, 2 AS b").unwrap();
+        let mut rows = stmt.query([]).unwrap();
+        let row = rows.next().unwrap().unwrap();
+        let j = row_to_json(row, &["a".into(), "b".into()]).unwrap();
+        assert_eq!(j["a"], json!(1));
+        assert_eq!(j["b"], json!(2));
+    }
+
+    #[test]
+    fn bind_refs_two_values() {
+        let v = parse_bind(Some("[1,2]")).unwrap();
+        assert_eq!(bind_refs(&v).len(), 2);
+    }
+
+    #[test]
+    fn looks_like_path_or_url_csv_extension() {
+        assert!(looks_like_path_or_url("/tmp/data.csv"));
+    }
 }
