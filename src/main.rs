@@ -886,4 +886,274 @@ mod tests {
         assert_eq!(v["a"], json!(7));
         assert_eq!(v["b"], json!("x"));
     }
+
+    #[test]
+    fn looks_like_path_or_url_parquet_extension() {
+        assert!(looks_like_path_or_url("data/file.parquet"));
+        assert!(looks_like_path_or_url("./relative.csv"));
+    }
+
+    #[test]
+    fn looks_like_path_or_url_tsv_extension() {
+        assert!(looks_like_path_or_url("sheet.tsv"));
+    }
+
+    #[test]
+    fn json_to_duckval_zero() {
+        assert!(matches!(json_to_duckval(json!(0)), Value::BigInt(0)));
+    }
+
+    #[test]
+    fn parse_bind_nested_array_serialized() {
+        let v = parse_bind(Some("[[1,2]]")).unwrap();
+        assert_eq!(v.len(), 1);
+        // Inner array element is serialized via json_to_duckval → Text.
+        assert!(matches!(&v[0], Value::Text(s) if s == "[1,2]"));
+    }
+
+    #[test]
+    fn quote_ident_multiple_embedded_quotes() {
+        assert_eq!(quote_ident("a\"b\"c"), "\"a\"\"b\"\"c\"");
+    }
+
+    #[test]
+    fn valref_to_json_boolean_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut stmt = conn.prepare("SELECT TRUE AS flag").unwrap();
+        let mut rows = stmt.query([]).unwrap();
+        let row = rows.next().unwrap().unwrap();
+        assert_eq!(valref_to_json(row.get_ref(0).unwrap()), json!(true));
+    }
+
+    #[test]
+    fn bind_refs_empty_input() {
+        assert!(bind_refs(&[]).is_empty());
+    }
+
+    #[test]
+    fn valref_to_json_tinyint_and_utinyint() {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT CAST(5 AS TINYINT) AS t, CAST(6 AS UTINYINT) AS u")
+            .unwrap();
+        let mut rows = stmt.query([]).unwrap();
+        let row = rows.next().unwrap().unwrap();
+        assert_eq!(valref_to_json(row.get_ref(0).unwrap()), json!(5));
+        assert_eq!(valref_to_json(row.get_ref(1).unwrap()), json!(6));
+    }
+
+    #[test]
+    fn valref_to_json_decimal_as_string() {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut stmt = conn.prepare("SELECT CAST(1.25 AS DECIMAL(10,2)) AS d").unwrap();
+        let mut rows = stmt.query([]).unwrap();
+        let row = rows.next().unwrap().unwrap();
+        let v = valref_to_json(row.get_ref(0).unwrap());
+        assert_eq!(v.as_str().unwrap(), "1.25");
+    }
+
+    #[test]
+    fn valref_to_json_interval_struct() {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT INTERVAL '1' MONTH + INTERVAL '2' DAY AS iv")
+            .unwrap();
+        let mut rows = stmt.query([]).unwrap();
+        let row = rows.next().unwrap().unwrap();
+        let v = valref_to_json(row.get_ref(0).unwrap());
+        assert_eq!(v["months"], 1);
+        assert_eq!(v["days"], 2);
+    }
+
+    #[test]
+    fn json_to_duckval_negative_int() {
+        assert!(matches!(json_to_duckval(json!(-9)), Value::BigInt(-9)));
+    }
+
+    #[test]
+    fn looks_like_path_or_url_http_scheme() {
+        assert!(looks_like_path_or_url("http://example.com/x.csv"));
+        // Bare table names without '/', '\', or known extensions are not paths.
+        assert!(!looks_like_path_or_url("my_table"));
+    }
+
+    #[test]
+    fn row_to_array_column_count_matches() {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut stmt = conn.prepare("SELECT 1, 2, 3").unwrap();
+        let mut rows = stmt.query([]).unwrap();
+        let row = rows.next().unwrap().unwrap();
+        let arr = row_to_array(row, 3).unwrap();
+        assert_eq!(arr.len(), 3);
+    }
+
+    #[test]
+    fn quote_ident_triple_embedded_quote() {
+        assert_eq!(quote_ident("a\"b\"c"), "\"a\"\"b\"\"c\"");
+    }
+
+    #[test]
+    fn parse_bind_float_becomes_double() {
+        let v = parse_bind(Some("[2.5]")).unwrap();
+        assert!(matches!(&v[0], Value::Double(f) if *f == 2.5));
+    }
+
+    #[test]
+    fn valref_to_json_smallint() {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut stmt = conn.prepare("SELECT CAST(100 AS SMALLINT) AS s").unwrap();
+        let mut rows = stmt.query([]).unwrap();
+        let row = rows.next().unwrap().unwrap();
+        assert_eq!(valref_to_json(row.get_ref(0).unwrap()), json!(100));
+    }
+
+    #[test]
+    fn valref_to_json_varchar_text() {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut stmt = conn.prepare("SELECT 'hello'::VARCHAR AS s").unwrap();
+        let mut rows = stmt.query([]).unwrap();
+        let row = rows.next().unwrap().unwrap();
+        assert_eq!(valref_to_json(row.get_ref(0).unwrap()), json!("hello"));
+    }
+
+    #[test]
+    fn valref_to_json_null_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut stmt = conn.prepare("SELECT NULL::INTEGER AS n").unwrap();
+        let mut rows = stmt.query([]).unwrap();
+        let row = rows.next().unwrap().unwrap();
+        assert_eq!(valref_to_json(row.get_ref(0).unwrap()), JsonValue::Null);
+    }
+
+    #[test]
+    fn json_to_duckval_true_false() {
+        assert!(matches!(json_to_duckval(json!(true)), Value::Boolean(true)));
+        assert!(matches!(json_to_duckval(json!(false)), Value::Boolean(false)));
+    }
+
+    #[test]
+    fn looks_like_path_or_url_windows_backslash() {
+        assert!(looks_like_path_or_url(r"C:\data\file.csv"));
+    }
+
+    #[test]
+    fn parse_bind_bool_values() {
+        let v = parse_bind(Some("[true, false]")).unwrap();
+        assert!(matches!(&v[0], Value::Boolean(true)));
+        assert!(matches!(&v[1], Value::Boolean(false)));
+    }
+
+    #[test]
+    fn row_to_json_multiple_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut stmt = conn.prepare("SELECT 1 AS a, 'x' AS b").unwrap();
+        let mut rows = stmt.query([]).unwrap();
+        let row = rows.next().unwrap().unwrap();
+        let v = row_to_json(row, &["a".into(), "b".into()]).unwrap();
+        assert_eq!(v["a"], json!(1));
+        assert_eq!(v["b"], json!("x"));
+    }
+
+    #[test]
+    fn quote_ident_backslash_not_special() {
+        assert_eq!(quote_ident("a\\b"), "\"a\\b\"");
+    }
+
+    #[test]
+    fn valref_to_json_uint_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut stmt = conn.prepare("SELECT CAST(7 AS UINTEGER) AS u").unwrap();
+        let mut rows = stmt.query([]).unwrap();
+        let row = rows.next().unwrap().unwrap();
+        assert_eq!(valref_to_json(row.get_ref(0).unwrap()), json!(7));
+    }
+
+    #[test]
+    fn valref_to_json_float_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut stmt = conn.prepare("SELECT CAST(1.5 AS FLOAT) AS f").unwrap();
+        let mut rows = stmt.query([]).unwrap();
+        let row = rows.next().unwrap().unwrap();
+        assert_eq!(valref_to_json(row.get_ref(0).unwrap()), json!(1.5));
+    }
+
+    #[test]
+    fn looks_like_path_or_url_https() {
+        assert!(looks_like_path_or_url("https://cdn.example/data.parquet"));
+    }
+
+    #[test]
+    fn parse_bind_empty_array() {
+        assert!(parse_bind(Some("[]")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn quote_ident_empty_string() {
+        assert_eq!(quote_ident(""), "\"\"");
+    }
+
+    #[test]
+    fn valref_to_json_date32_prefix() {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut stmt = conn.prepare("SELECT DATE '2024-06-15' AS d").unwrap();
+        let mut rows = stmt.query([]).unwrap();
+        let row = rows.next().unwrap().unwrap();
+        let v = valref_to_json(row.get_ref(0).unwrap());
+        assert!(v.as_str().unwrap().starts_with("date32:"));
+    }
+
+    #[test]
+    fn json_to_duckval_string_becomes_text() {
+        assert!(matches!(json_to_duckval(json!("hi")), Value::Text(s) if s == "hi"));
+    }
+
+    #[test]
+    fn valref_to_json_usmallint() {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut stmt = conn.prepare("SELECT CAST(9 AS USMALLINT) AS u").unwrap();
+        let mut rows = stmt.query([]).unwrap();
+        let row = rows.next().unwrap().unwrap();
+        assert_eq!(valref_to_json(row.get_ref(0).unwrap()), json!(9));
+    }
+
+    #[test]
+    fn valref_to_json_hugeint_as_string() {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT CAST(999999999999999999 AS HUGEINT) AS h")
+            .unwrap();
+        let mut rows = stmt.query([]).unwrap();
+        let row = rows.next().unwrap().unwrap();
+        assert!(valref_to_json(row.get_ref(0).unwrap()).is_string());
+    }
+
+    #[test]
+    fn looks_like_path_or_url_file_scheme() {
+        assert!(looks_like_path_or_url("file:///tmp/x.csv"));
+    }
+
+    #[test]
+    fn quote_ident_dot_in_name() {
+        assert_eq!(quote_ident("schema.table"), "\"schema.table\"");
+    }
+
+    #[test]
+    fn row_to_array_single_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut stmt = conn.prepare("SELECT 42").unwrap();
+        let mut rows = stmt.query([]).unwrap();
+        let row = rows.next().unwrap().unwrap();
+        assert_eq!(row_to_array(row, 1).unwrap(), vec![json!(42)]);
+    }
+
+    #[test]
+    fn json_to_duckval_array_serializes_text() {
+        let v = json_to_duckval(json!([1, 2]));
+        assert!(matches!(v, Value::Text(s) if s == "[1,2]"));
+    }
+
+    #[test]
+    fn looks_like_path_or_url_relative_dot_slash() {
+        assert!(looks_like_path_or_url("./data.parquet"));
+    }
 }
