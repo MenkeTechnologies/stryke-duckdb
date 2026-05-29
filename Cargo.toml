@@ -1,6 +1,6 @@
 [package]
 name = "stryke-duckdb-helper"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "DuckDB bridge binary for the stryke `duckdb` package."
 authors = ["MenkeTechnologies"]

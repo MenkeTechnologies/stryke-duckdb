@@ -11,7 +11,7 @@
 //!     direct-file SQL (e.g. `SELECT * FROM 'data.parquet'`).
 
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 use base64::engine::general_purpose::STANDARD as B64;
@@ -142,18 +142,48 @@ fn main() {
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
-    let conn = open_conn(cli.db.as_deref(), cli.read_only, &cli.pragmas, &cli.extensions)?;
+    let conn = open_conn(
+        cli.db.as_deref(),
+        cli.read_only,
+        &cli.pragmas,
+        &cli.extensions,
+    )?;
     match cli.cmd {
-        Cmd::Query { sql, bind, columnar, with_meta, limit } => {
-            cmd_query(&conn, &sql, bind.as_deref(), columnar, with_meta, limit)
-        }
+        Cmd::Query {
+            sql,
+            bind,
+            columnar,
+            with_meta,
+            limit,
+        } => cmd_query(&conn, &sql, bind.as_deref(), columnar, with_meta, limit),
         Cmd::Execute { sql, bind } => cmd_execute(&conn, &sql, bind.as_deref()),
         Cmd::Exec { file } => cmd_exec_file(&conn, &file),
-        Cmd::Dump { source, columns, where_clause, order_by, limit } => {
-            cmd_dump(&conn, &source, columns.as_deref(), where_clause.as_deref(), order_by.as_deref(), limit)
-        }
-        Cmd::Import { path, table, kind, replace } => cmd_import(&conn, &path, &table, &kind, replace),
-        Cmd::Export { table, path, kind, compression } => cmd_export(&conn, &table, &path, &kind, &compression),
+        Cmd::Dump {
+            source,
+            columns,
+            where_clause,
+            order_by,
+            limit,
+        } => cmd_dump(
+            &conn,
+            &source,
+            columns.as_deref(),
+            where_clause.as_deref(),
+            order_by.as_deref(),
+            limit,
+        ),
+        Cmd::Import {
+            path,
+            table,
+            kind,
+            replace,
+        } => cmd_import(&conn, &path, &table, &kind, replace),
+        Cmd::Export {
+            table,
+            path,
+            kind,
+            compression,
+        } => cmd_export(&conn, &table, &path, &kind, &compression),
         Cmd::Tables => cmd_tables(&conn),
         Cmd::Schema { table } => cmd_schema(&conn, &table),
         Cmd::Inspect => cmd_inspect(&conn, cli.db.as_deref()),
@@ -176,8 +206,7 @@ fn open_conn(
             if read_only {
                 Connection::open_with_flags(
                     p,
-                    duckdb::Config::default()
-                        .access_mode(duckdb::AccessMode::ReadOnly)?,
+                    duckdb::Config::default().access_mode(duckdb::AccessMode::ReadOnly)?,
                 )
                 .with_context(|| format!("opening {} (read-only)", p.display()))?
             } else {
@@ -245,7 +274,7 @@ fn json_to_duckval(v: JsonValue) -> Value {
     }
 }
 
-fn bind_refs<'a>(b: &'a [Value]) -> Vec<&'a dyn ToSql> {
+fn bind_refs(b: &[Value]) -> Vec<&dyn ToSql> {
     b.iter().map(|v| v as &dyn ToSql).collect()
 }
 
@@ -253,6 +282,7 @@ fn bind_refs<'a>(b: &'a [Value]) -> Vec<&'a dyn ToSql> {
 /* row → JSON                                                                */
 /* ------------------------------------------------------------------------- */
 
+#[allow(dead_code)]
 fn valref_to_json(v: ValueRef<'_>) -> JsonValue {
     match v {
         ValueRef::Null => JsonValue::Null,
@@ -272,14 +302,16 @@ fn valref_to_json(v: ValueRef<'_>) -> JsonValue {
         ValueRef::Timestamp(_unit, _ts) => JsonValue::String(format!("{:?}", v)),
         ValueRef::Date32(d) => JsonValue::String(format!("date32:{d}")),
         ValueRef::Time64(_unit, _t) => JsonValue::String(format!("{:?}", v)),
-        ValueRef::Interval { months, days, nanos } => json!({
+        ValueRef::Interval {
+            months,
+            days,
+            nanos,
+        } => json!({
             "months": months,
             "days": days,
             "nanos": nanos,
         }),
-        ValueRef::Text(s) => {
-            JsonValue::String(String::from_utf8_lossy(s).into_owned())
-        }
+        ValueRef::Text(s) => JsonValue::String(String::from_utf8_lossy(s).into_owned()),
         ValueRef::Blob(b) => {
             let mut out = String::from("base64:");
             out.push_str(&B64.encode(b));
@@ -292,6 +324,7 @@ fn valref_to_json(v: ValueRef<'_>) -> JsonValue {
     }
 }
 
+#[allow(dead_code)]
 fn row_to_json(row: &duckdb::Row<'_>, column_names: &[String]) -> Result<JsonValue> {
     let mut out = JMap::with_capacity(column_names.len());
     for (i, name) in column_names.iter().enumerate() {
@@ -301,6 +334,7 @@ fn row_to_json(row: &duckdb::Row<'_>, column_names: &[String]) -> Result<JsonVal
     Ok(JsonValue::Object(out))
 }
 
+#[allow(dead_code)]
 fn row_to_array(row: &duckdb::Row<'_>, ncols: usize) -> Result<Vec<JsonValue>> {
     let mut out = Vec::with_capacity(ncols);
     for i in 0..ncols {
@@ -330,15 +364,9 @@ fn cmd_query(
     let binds = parse_bind(bind)?;
     let bind_refs = bind_refs(&binds);
     let mut stmt = conn.prepare(sql).context("prepare")?;
-    let mut arrow_iter = stmt
-        .query_arrow(&bind_refs[..])
-        .context("query_arrow")?;
+    let mut arrow_iter = stmt.query_arrow(&bind_refs[..]).context("query_arrow")?;
     let schema = arrow_iter.get_schema();
-    let columns: Vec<String> = schema
-        .fields()
-        .iter()
-        .map(|f| f.name().clone())
-        .collect();
+    let columns: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
 
     let stdout = io::stdout();
     let mut out = BufWriter::new(stdout.lock());
@@ -435,8 +463,8 @@ fn cmd_execute(conn: &Connection, sql: &str, bind: Option<&str>) -> Result<()> {
 }
 
 fn cmd_exec_file(conn: &Connection, file: &PathBuf) -> Result<()> {
-    let raw = std::fs::read_to_string(file)
-        .with_context(|| format!("reading {}", file.display()))?;
+    let raw =
+        std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
     conn.execute_batch(&raw).context("execute_batch")?;
     emit_json(&json!({ "ok": true }))
 }
@@ -488,7 +516,7 @@ fn looks_like_path_or_url(s: &str) -> bool {
 
 fn cmd_import(
     conn: &Connection,
-    path: &PathBuf,
+    path: &Path,
     table: &str,
     kind: &str,
     replace: bool,
@@ -505,10 +533,7 @@ fn cmd_import(
         "auto" | "" => format!("SELECT * FROM {path_lit}"),
         other => bail!("unknown --kind `{other}` (parquet|csv|json|auto)"),
     };
-    let sql = format!(
-        "CREATE TABLE {} AS {select_expr};",
-        quote_ident(table),
-    );
+    let sql = format!("CREATE TABLE {} AS {select_expr};", quote_ident(table),);
     conn.execute_batch(&sql).context("import statement")?;
     let count: i64 = conn
         .query_row(
@@ -534,15 +559,15 @@ fn cmd_export(
 ) -> Result<()> {
     let path_lit = format!("'{}'", path.display().to_string().replace('\'', "''"));
     let copy_opts = match kind.to_ascii_lowercase().as_str() {
-        "parquet" => format!("(FORMAT 'parquet', COMPRESSION '{}')", compression.replace('\'', "''")),
+        "parquet" => format!(
+            "(FORMAT 'parquet', COMPRESSION '{}')",
+            compression.replace('\'', "''")
+        ),
         "csv" => "(FORMAT 'csv', HEADER TRUE)".to_string(),
         "json" | "ndjson" => "(FORMAT 'json')".to_string(),
         other => bail!("unknown --kind `{other}` (parquet|csv|json)"),
     };
-    let sql = format!(
-        "COPY {} TO {path_lit} {copy_opts};",
-        quote_ident(table),
-    );
+    let sql = format!("COPY {} TO {path_lit} {copy_opts};", quote_ident(table),);
     conn.execute_batch(&sql).context("export statement")?;
     let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     emit_json(&json!({
@@ -565,10 +590,7 @@ fn cmd_tables(conn: &Connection) -> Result<()> {
     while let Some(row) = rows.next()? {
         let name: String = row.get(0)?;
         let schema: String = row.get(1)?;
-        serde_json::to_writer(
-            &mut out,
-            &json!({ "name": name, "schema": schema }),
-        )?;
+        serde_json::to_writer(&mut out, &json!({ "name": name, "schema": schema }))?;
         out.write_all(b"\n")?;
     }
     Ok(())
@@ -616,9 +638,8 @@ fn cmd_inspect(conn: &Connection, db_path: Option<&std::path::Path>) -> Result<(
     let db_size = db_path
         .and_then(|p| std::fs::metadata(p).ok().map(|m| m.len()))
         .unwrap_or(0);
-    let mut stmt = conn.prepare(
-        "SELECT database_name, type FROM duckdb_databases() ORDER BY database_name",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT database_name, type FROM duckdb_databases() ORDER BY database_name")?;
     let mut rows = stmt.query([])?;
     let mut dbs: Vec<JsonValue> = Vec::new();
     while let Some(row) = rows.next()? {
@@ -721,7 +742,10 @@ mod tests {
     #[test]
     fn json_to_duckval_bool() {
         assert!(matches!(json_to_duckval(json!(true)), Value::Boolean(true)));
-        assert!(matches!(json_to_duckval(json!(false)), Value::Boolean(false)));
+        assert!(matches!(
+            json_to_duckval(json!(false)),
+            Value::Boolean(false)
+        ));
     }
 
     #[test]
@@ -945,7 +969,9 @@ mod tests {
     #[test]
     fn valref_to_json_decimal_as_string() {
         let conn = Connection::open_in_memory().unwrap();
-        let mut stmt = conn.prepare("SELECT CAST(1.25 AS DECIMAL(10,2)) AS d").unwrap();
+        let mut stmt = conn
+            .prepare("SELECT CAST(1.25 AS DECIMAL(10,2)) AS d")
+            .unwrap();
         let mut rows = stmt.query([]).unwrap();
         let row = rows.next().unwrap().unwrap();
         let v = valref_to_json(row.get_ref(0).unwrap());
@@ -1028,7 +1054,10 @@ mod tests {
     #[test]
     fn json_to_duckval_true_false() {
         assert!(matches!(json_to_duckval(json!(true)), Value::Boolean(true)));
-        assert!(matches!(json_to_duckval(json!(false)), Value::Boolean(false)));
+        assert!(matches!(
+            json_to_duckval(json!(false)),
+            Value::Boolean(false)
+        ));
     }
 
     #[test]
@@ -1178,7 +1207,10 @@ mod tests {
 
     #[test]
     fn parse_bind_single_int() {
-        assert!(matches!(parse_bind(Some("[7]")).unwrap()[0], Value::BigInt(7)));
+        assert!(matches!(
+            parse_bind(Some("[7]")).unwrap()[0],
+            Value::BigInt(7)
+        ));
     }
 
     #[test]
