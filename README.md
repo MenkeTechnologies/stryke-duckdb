@@ -199,7 +199,7 @@ DuckDB::ping     %opts → 1 | ""
 ```stryke
 DuckDB::helper_path()   → $abs_path
 DuckDB::ensure_built()  → $abs_path
-DuckDB::version()       → "stryke-duckdb-helper 0.1.0"
+DuckDB::version()       → "stryke-duckdb-helper 0.1.1"
 ```
 
 ## [0x05] Helper protocol
