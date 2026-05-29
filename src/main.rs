@@ -1317,4 +1317,89 @@ mod tests {
             "expected `parsing --bind JSON` in chain; got {chain:?}"
         );
     }
+
+    // ─── clap parsing — Cli top-level + Cmd subcommand routing ───────────
+    // Pin the CLI surface: global flags, required positionals, default
+    // values. Drift here would silently change which DuckDB SQL fires or
+    // which file format is read/written by default.
+
+    fn parse_cli(args: &[&str]) -> Result<Cli, clap::Error> {
+        let mut argv = vec!["stryke-duckdb-helper"];
+        argv.extend_from_slice(args);
+        Cli::try_parse_from(argv)
+    }
+
+    #[test]
+    fn cli_in_memory_default_when_db_flag_absent() {
+        // Pin: no --db means in-memory database. A drift to a default file
+        // path would silently persist queries that callers expect to be
+        // ephemeral (the documented in-memory contract per main.rs:9-11).
+        let cli = parse_cli(&["ping"]).expect("parse");
+        assert!(cli.db.is_none(), "default must be in-memory (db=None)");
+        assert!(matches!(cli.cmd, Cmd::Ping));
+    }
+
+    #[test]
+    fn cli_query_requires_sql_positional() {
+        let err = parse_cli(&["query"]).expect_err("missing sql");
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn cli_import_default_kind_is_auto() {
+        // Pin: import auto-detects format from extension. A drift to
+        // explicit `parquet` would silently break CSV/JSON imports.
+        let cli = parse_cli(&["import", "/tmp/data.parquet", "--table", "t"]).expect("parse");
+        match cli.cmd {
+            Cmd::Import { kind, replace, .. } => {
+                assert_eq!(kind, "auto");
+                assert!(!replace, "--replace must be opt-in (no silent drop)");
+            }
+            _ => panic!("expected Import"),
+        }
+    }
+
+    #[test]
+    fn cli_export_defaults_parquet_and_zstd_compression() {
+        // Pin parquet+zstd — the high-compression DuckDB default that
+        // benchmarks tend to use. Drift here would surprise round-trip
+        // size measurements (csv default = far larger files).
+        let cli = parse_cli(&["export", "--table", "t", "/tmp/out.parquet"]).expect("parse");
+        match cli.cmd {
+            Cmd::Export {
+                kind, compression, ..
+            } => {
+                assert_eq!(kind, "parquet");
+                assert_eq!(compression, "zstd");
+            }
+            _ => panic!("expected Export"),
+        }
+    }
+
+    #[test]
+    fn cli_global_extensions_and_pragmas_accumulate() {
+        // Both --extension and --pragma are repeatable globals; pin the
+        // accumulate-into-Vec wiring against accidental last-wins.
+        let cli = parse_cli(&[
+            "-e",
+            "httpfs",
+            "-e",
+            "aws",
+            "-p",
+            "memory_limit=4GB",
+            "tables",
+        ])
+        .expect("parse");
+        assert_eq!(cli.extensions, vec!["httpfs", "aws"]);
+        assert_eq!(cli.pragmas, vec!["memory_limit=4GB"]);
+        assert!(matches!(cli.cmd, Cmd::Tables));
+    }
+
+    #[test]
+    fn cli_schema_requires_table_flag() {
+        // --table is the required selector; without it the SELECT would
+        // hit no table at all.
+        let err = parse_cli(&["schema"]).expect_err("missing --table");
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
 }
