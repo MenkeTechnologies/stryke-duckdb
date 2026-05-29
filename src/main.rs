@@ -1402,4 +1402,130 @@ mod tests {
         let err = parse_cli(&["schema"]).expect_err("missing --table");
         assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
     }
+
+    // ─── clap parsing — additional Cmd surfaces (round 2) ──────────────
+    // Previous round pinned db-default-None, query-requires-sql,
+    // import/export defaults, --extension/--pragma accumulation, schema
+    // --table. These pin: Query optional flags thread through (columnar /
+    // with-meta / limit / bind); Execute requires sql + --bind optional;
+    // Exec requires --file; Dump requires source positional; unit-variants
+    // Ping/Tables/Inspect route; --read-only global threads through.
+
+    #[test]
+    fn cli_query_optional_flags_thread_through() {
+        // Pin: --bind / --columnar / --with-meta / --limit all land on
+        // their matched fields. Drift would silently disable bind values
+        // or run unbounded result sets.
+        let cli = parse_cli(&[
+            "query",
+            "SELECT * FROM t WHERE id = ?",
+            "--bind",
+            r#"[42]"#,
+            "--columnar",
+            "--with-meta",
+            "--limit",
+            "100",
+        ])
+        .expect("parse");
+        match cli.cmd {
+            Cmd::Query {
+                sql,
+                bind,
+                columnar,
+                with_meta,
+                limit,
+            } => {
+                assert_eq!(sql, "SELECT * FROM t WHERE id = ?");
+                assert_eq!(bind.as_deref(), Some(r#"[42]"#));
+                assert!(columnar);
+                assert!(with_meta);
+                assert_eq!(limit, Some(100));
+            }
+            _ => panic!("expected Query"),
+        }
+    }
+
+    #[test]
+    fn cli_execute_requires_sql_and_bind_optional() {
+        // Execute mirrors Query's required-sql contract but for DDL/DML.
+        // --bind remains optional and threads through when supplied.
+        use clap::error::ErrorKind::MissingRequiredArgument;
+        assert_eq!(
+            parse_cli(&["execute"]).unwrap_err().kind(),
+            MissingRequiredArgument
+        );
+        let cli = parse_cli(&["execute", "INSERT INTO t VALUES (?)", "--bind", r#"["x"]"#])
+            .expect("parse");
+        match cli.cmd {
+            Cmd::Execute { sql, bind } => {
+                assert_eq!(sql, "INSERT INTO t VALUES (?)");
+                assert_eq!(bind.as_deref(), Some(r#"["x"]"#));
+            }
+            _ => panic!("expected Execute"),
+        }
+    }
+
+    #[test]
+    fn cli_exec_requires_file_flag() {
+        // Exec runs a multi-statement script; without --file there's
+        // nothing to run — clap must reject at parse time.
+        use clap::error::ErrorKind::MissingRequiredArgument;
+        assert_eq!(
+            parse_cli(&["exec"]).unwrap_err().kind(),
+            MissingRequiredArgument
+        );
+        let cli = parse_cli(&["exec", "--file", "/tmp/x.sql"]).expect("parse");
+        match cli.cmd {
+            Cmd::Exec { file } => assert_eq!(file, PathBuf::from("/tmp/x.sql")),
+            _ => panic!("expected Exec"),
+        }
+    }
+
+    #[test]
+    fn cli_dump_requires_source_and_routes_unit_variants() {
+        // Dump's `source` positional is the table/URL/path; missing it
+        // means no FROM clause. Also pin Ping/Tables/Inspect routing.
+        use clap::error::ErrorKind::MissingRequiredArgument;
+        assert_eq!(
+            parse_cli(&["dump"]).unwrap_err().kind(),
+            MissingRequiredArgument
+        );
+
+        let cli = parse_cli(&["dump", "s3://b/data.parquet"]).expect("parse");
+        match cli.cmd {
+            Cmd::Dump {
+                source,
+                limit,
+                where_clause,
+                ..
+            } => {
+                assert_eq!(source, "s3://b/data.parquet");
+                assert!(limit.is_none());
+                assert!(where_clause.is_none());
+            }
+            _ => panic!("expected Dump"),
+        }
+
+        assert!(matches!(parse_cli(&["ping"]).unwrap().cmd, Cmd::Ping));
+        assert!(matches!(parse_cli(&["tables"]).unwrap().cmd, Cmd::Tables));
+        assert!(matches!(parse_cli(&["inspect"]).unwrap().cmd, Cmd::Inspect));
+    }
+
+    #[test]
+    fn cli_read_only_global_threads_through_with_any_subcommand() {
+        // Pin: --read-only is a global=true flag on Cli; it must be
+        // accessible alongside any subcommand. Drift would silently allow
+        // writes against an explicitly read-only-opened db.
+        let cli = parse_cli(&["--read-only", "ping"]).expect("parse");
+        assert!(cli.read_only);
+        assert!(matches!(cli.cmd, Cmd::Ping));
+
+        // global=true => placement after subcommand also accepted.
+        let cli = parse_cli(&["tables", "--read-only"]).expect("parse");
+        assert!(cli.read_only);
+
+        // Default off so write paths aren't accidentally blocked.
+        let cli = parse_cli(&["ping"]).expect("parse");
+        assert!(!cli.read_only);
+    }
 }
