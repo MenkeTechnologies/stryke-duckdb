@@ -1283,4 +1283,38 @@ mod tests {
     fn looks_like_path_or_url_csv_extension() {
         assert!(looks_like_path_or_url("/tmp/data.csv"));
     }
+
+    // ─── parse_bind error-message contracts ──────────────────────────
+    //
+    // The existing tests pin happy-path types and the rejection
+    // shape; these pin the user-visible error text on the two
+    // structured failure paths so refactors of the message strings
+    // don't silently change what scripts see.
+
+    #[test]
+    fn parse_bind_string_scalar_rejected_with_array_hint() {
+        let err = parse_bind(Some("\"oops\"")).unwrap_err();
+        assert!(
+            format!("{err}").contains("--bind must be a JSON array"),
+            "rejection must hint at the expected shape"
+        );
+    }
+
+    #[test]
+    fn parse_bind_bool_scalar_rejected_with_array_hint() {
+        let err = parse_bind(Some("true")).unwrap_err();
+        assert!(format!("{err}").contains("--bind must be a JSON array"));
+    }
+
+    #[test]
+    fn parse_bind_invalid_json_surfaces_context() {
+        let err = parse_bind(Some("[1,")).unwrap_err();
+        // anyhow `.context("parsing --bind JSON")` must be reachable;
+        // chain contains it.
+        let chain: Vec<_> = err.chain().map(|c| c.to_string()).collect();
+        assert!(
+            chain.iter().any(|s| s.contains("parsing --bind JSON")),
+            "expected `parsing --bind JSON` in chain; got {chain:?}"
+        );
+    }
 }
