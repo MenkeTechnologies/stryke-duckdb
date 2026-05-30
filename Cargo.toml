@@ -6,6 +6,7 @@ description = "DuckDB bridge binary for the stryke `duckdb` package."
 authors = ["MenkeTechnologies"]
 license = "MIT"
 repository = "https://github.com/MenkeTechnologies/stryke-duckdb"
+homepage = "https://menketechnologies.github.io/stryke-duckdb/"
 publish = false
 
 [[bin]]
