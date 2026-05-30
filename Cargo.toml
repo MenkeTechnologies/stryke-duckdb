@@ -2,7 +2,7 @@
 name = "stryke-duckdb-helper"
 version = "0.1.1"
 edition = "2021"
-description = "DuckDB bridge binary for the stryke `duckdb` package."
+description = "DuckDB bridge binary for the stryke `duckdb` package"
 authors = ["MenkeTechnologies"]
 license = "MIT"
 repository = "https://github.com/MenkeTechnologies/stryke-duckdb"
