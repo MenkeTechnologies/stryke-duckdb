@@ -199,7 +199,7 @@ DuckDB::ping     %opts → 1 | ""
 ```stryke
 DuckDB::helper_path()   → $abs_path
 DuckDB::ensure_built()  → $abs_path
-DuckDB::version()       → "stryke-duckdb-helper 0.1.1"
+DuckDB::version()       → "stryke-duckdb-helper <version>"
 ```
 
 ## [0x05] Helper protocol
@@ -272,12 +272,9 @@ stryke-duckdb/
   stryke.toml                      # stryke package manifest
   Cargo.toml                       # Rust helper crate manifest
   Makefile
-  src/main.rs                      # single-file helper, ~600 LOC
+  src/main.rs                      # single-file helper
   lib/
     DuckDB.stk                     # `use DuckDB`
-  bin/
-    duck.stk                       # `duck` CLI
-    duck-build.stk
   t/
     test_duckdb.stk                # 9-test self-contained round-trip
   examples/
