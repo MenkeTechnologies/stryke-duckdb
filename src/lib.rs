@@ -455,3 +455,166 @@ pub extern "C" fn duckdb__schema(args: *const c_char) -> *const c_char {
         })
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_from_opts_defaults_to_memory_singleton() {
+        let k = key_from_opts(&json!({}));
+        assert_eq!(k.path, ":memory:");
+        assert_eq!(k.session, "_default");
+        assert!(!k.read_only);
+    }
+
+    #[test]
+    fn key_from_opts_path_override() {
+        let k = key_from_opts(&json!({"path": "/tmp/a.duckdb"}));
+        assert_eq!(k.path, "/tmp/a.duckdb");
+    }
+
+    #[test]
+    fn key_from_opts_session_isolates_caches() {
+        // Same path + different session = different cache slot. Required
+        // so two concurrent `s t` worker threads don't share a connection.
+        let a = key_from_opts(&json!({"path": "/tmp/x.duckdb", "session": "worker-1"}));
+        let b = key_from_opts(&json!({"path": "/tmp/x.duckdb", "session": "worker-2"}));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn key_from_opts_read_only_flag_round_trips() {
+        let k = key_from_opts(&json!({"path": "/tmp/y.duckdb", "read_only": true}));
+        assert!(k.read_only);
+    }
+
+    #[test]
+    fn value_ref_null_and_bool() {
+        assert_eq!(value_ref_to_json(ValueRef::Null), Value::Null);
+        assert_eq!(value_ref_to_json(ValueRef::Boolean(true)), json!(true));
+        assert_eq!(value_ref_to_json(ValueRef::Boolean(false)), json!(false));
+    }
+
+    #[test]
+    fn value_ref_signed_integers() {
+        assert_eq!(value_ref_to_json(ValueRef::TinyInt(-12)), json!(-12));
+        assert_eq!(value_ref_to_json(ValueRef::SmallInt(300)), json!(300));
+        assert_eq!(value_ref_to_json(ValueRef::Int(100_000)), json!(100_000));
+        assert_eq!(
+            value_ref_to_json(ValueRef::BigInt(i64::MIN)),
+            json!(i64::MIN)
+        );
+    }
+
+    #[test]
+    fn value_ref_unsigned_integers() {
+        assert_eq!(value_ref_to_json(ValueRef::UTinyInt(255)), json!(255));
+        assert_eq!(value_ref_to_json(ValueRef::USmallInt(60000)), json!(60000));
+        assert_eq!(
+            value_ref_to_json(ValueRef::UInt(4_000_000_000)),
+            json!(4_000_000_000_u32)
+        );
+        assert_eq!(
+            value_ref_to_json(ValueRef::UBigInt(u64::MAX)),
+            json!(u64::MAX)
+        );
+    }
+
+    #[test]
+    fn value_ref_floats() {
+        assert_eq!(value_ref_to_json(ValueRef::Float(1.5)), json!(1.5));
+        assert_eq!(
+            value_ref_to_json(ValueRef::Double(std::f64::consts::PI)),
+            json!(std::f64::consts::PI)
+        );
+    }
+
+    #[test]
+    fn value_ref_hugeint_stringifies() {
+        // HugeInt doesn't fit JSON Number; package returns String. Stable
+        // contract so downstream parsers can treat it as a decimal.
+        let v = value_ref_to_json(ValueRef::HugeInt(
+            170_141_183_460_469_231_731_687_303_715_884_105_727_i128,
+        ));
+        assert!(matches!(v, Value::String(_)));
+        assert_eq!(
+            v.as_str().unwrap(),
+            "170141183460469231731687303715884105727"
+        );
+    }
+
+    #[test]
+    fn value_ref_text_utf8() {
+        let s = b"hello";
+        assert_eq!(value_ref_to_json(ValueRef::Text(s)), json!("hello"));
+    }
+
+    #[test]
+    fn value_ref_text_non_utf8_falls_back_to_marker() {
+        let bytes = &[0xFF_u8, 0xFE, 0xFD];
+        let v = value_ref_to_json(ValueRef::Text(bytes));
+        assert_eq!(v, json!("<binary text 3 bytes>"));
+    }
+
+    #[test]
+    fn value_ref_blob_marker() {
+        let bytes = &[0u8; 1024];
+        let v = value_ref_to_json(ValueRef::Blob(bytes));
+        assert_eq!(v, json!("<blob 1024 bytes>"));
+    }
+
+    // ── value_to_tosql round-trip ──
+    // Exercises the JSON → ToSql mapping by binding values into a real
+    // in-memory DuckDB and reading them back. End-to-end correctness
+    // matters more than introspecting the boxed trait object.
+
+    fn bind_and_read_back(v: &Value) -> Value {
+        let conn = Connection::open_in_memory().unwrap();
+        let boxed = value_to_tosql(v);
+        let mut stmt = conn.prepare("SELECT ?").unwrap();
+        let mut rows = stmt.query(duckdb::params![boxed.as_ref()]).unwrap();
+        let row = rows.next().unwrap().unwrap();
+        value_ref_to_json(row.get_ref(0).unwrap())
+    }
+
+    #[test]
+    fn value_to_tosql_null_round_trip() {
+        assert_eq!(bind_and_read_back(&Value::Null), Value::Null);
+    }
+
+    #[test]
+    fn value_to_tosql_bool_round_trip() {
+        assert_eq!(bind_and_read_back(&json!(true)), json!(true));
+        assert_eq!(bind_and_read_back(&json!(false)), json!(false));
+    }
+
+    #[test]
+    fn value_to_tosql_integer_round_trip() {
+        assert_eq!(bind_and_read_back(&json!(42)), json!(42));
+        assert_eq!(bind_and_read_back(&json!(-99)), json!(-99));
+    }
+
+    #[test]
+    fn value_to_tosql_float_round_trip() {
+        assert_eq!(bind_and_read_back(&json!(3.5)), json!(3.5));
+    }
+
+    #[test]
+    fn value_to_tosql_string_round_trip() {
+        assert_eq!(bind_and_read_back(&json!("hi")), json!("hi"));
+    }
+
+    #[test]
+    fn value_to_tosql_array_serializes_as_json_string() {
+        // Arrays/objects encode as JSON text — callers cast to JSON in SQL.
+        let v = bind_and_read_back(&json!([1, 2, 3]));
+        assert_eq!(v.as_str().unwrap(), "[1,2,3]");
+    }
+
+    #[test]
+    fn value_to_tosql_object_serializes_as_json_string() {
+        let v = bind_and_read_back(&json!({"a": 1}));
+        assert_eq!(v.as_str().unwrap(), r#"{"a":1}"#);
+    }
+}

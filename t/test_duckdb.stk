@@ -1,105 +1,62 @@
-# t/test_duckdb.stk — self-contained round-trip via in-memory DuckDB.
-#
-# Requires the cdylib to be loadable. Install once with `s pkg install -g .`
-# from the package root so stryke's FFI bridge dlopens
-# lib/libstryke_duckdb.{dylib,so} on `use DuckDB`.
+## t/test_duckdb.stk — assertion tests for the stryke `DuckDB` package.
+##
+## Uses stryke's native test framework (`assert_*` + `test_run`).
+## Self-contained — DuckDB embeds; no external service needed beyond the
+## loaded cdylib (install once with `s pkg install -g .` so stryke's FFI
+## bridge dlopens `lib/libstryke_duckdb.{dylib,so}` on `use DuckDB`).
 
 use DuckDB
 
-val $have_cdylib = eval { DuckDB::version(); 1 }
-unless ($have_cdylib) {
-    p "1..0 # SKIP cdylib not loaded — run `s pkg install -g .` first"
-    exit 0
-}
+# ── permission-free: cdylib reachable ───────────────────────────────
+val $version = DuckDB::version()
+assert_ok $version, "DuckDB::version returns truthy (cdylib loaded)"
+assert_ok DuckDB::ping(), "DuckDB::ping returns truthy"
 
-p "1..9"
-var $i = 0
+# ── plain SELECT (constants) ────────────────────────────────────────
+val @r1 = DuckDB::query("SELECT 1+1 AS two, 'hi' AS s")
+assert_eq scalar(@r1), 1, "query const: 1 row"
+assert_eq $r1[0]->{two}, 2, "query const: 1+1=2"
+assert_eq $r1[0]->{s}, "hi", "query const: string col"
 
-# 1. ping
-$i++
-p (DuckDB::ping() ? "ok $i - ping" : "not ok $i - ping false")
+# ── range table-valued function ─────────────────────────────────────
+val @r2 = DuckDB::query("SELECT n FROM range(5) AS r(n)")
+assert_eq scalar(@r2), 5, "range(5) returns 5 rows"
+assert_eq $r2[0]->{n}, 0, "range(5) starts at 0"
+assert_eq $r2[4]->{n}, 4, "range(5) ends at 4"
 
-# 2. plain SELECT (constants)
-var @r
-eval { @r = DuckDB::query("SELECT 1+1 AS two, 'hi' AS s") }
-$i++
-p $@ ? "not ok $i - query const: $@" :
-       (len(@r) == 1 && $r[0]->{two} == 2 && $r[0]->{s} eq "hi"
-            ? "ok $i - query const"
-            : "not ok $i - query const wrong: " . to_json(\@r))
+# ── positional bind ─────────────────────────────────────────────────
+val @r3 = DuckDB::query("SELECT ?::INT + ?::INT AS r", bind => [10, 32])
+assert_eq $r3[0]->{r}, 42, "positional bind: 10+32=42"
 
-# 3. range table-valued function
-eval { @r = DuckDB::query("SELECT n FROM range(5) AS r(n)") }
-$i++
-p $@ ? "not ok $i - range: $@" :
-       (len(@r) == 5 && $r[0]->{n} == 0 && $r[4]->{n} == 4
-            ? "ok $i - range"
-            : "not ok $i - range wrong")
+# ── query_scalar ────────────────────────────────────────────────────
+assert_eq DuckDB::query_scalar("SELECT COUNT(*) FROM range(1000)"), 1000, "query_scalar count"
 
-# 4. positional bind
-eval { @r = DuckDB::query("SELECT ?::INT + ?::INT AS r", bind => [10, 32]) }
-$i++
-p $@ ? "not ok $i - bind: $@" :
-       ($r[0]->{r} == 42 ? "ok $i - bind" : "not ok $i - bind wrong")
+# ── columnar ────────────────────────────────────────────────────────
+val $cw = DuckDB::query(
+    "SELECT id, name FROM (VALUES (1,'a'),(2,'b'),(3,'c')) AS t(id,name)",
+    columnar => 1,
+)
+assert_eq $cw->{num_rows}, 3, "columnar: num_rows=3"
+assert_eq scalar(@{$cw->{rows}}), 3, "columnar: rows array has 3 entries"
 
-# 5. query_scalar
-var $n
-eval { $n = DuckDB::query_scalar("SELECT COUNT(*) FROM range(1000)") }
-$i++
-p $@ ? "not ok $i - query_scalar: $@" :
-       ($n == 1000 ? "ok $i - query_scalar" : "not ok $i - query_scalar=$n")
-
-# 6. columnar
-var $cw
-eval {
-    $cw = DuckDB::query(
-        "SELECT id, name FROM (VALUES (1,'a'),(2,'b'),(3,'c')) AS t(id,name)",
-        columnar => 1,
-    )
-}
-$i++
-p $@ ? "not ok $i - columnar: $@" :
-       ($cw->{num_rows} == 3 && len(@{$cw->{rows}}) == 3
-            ? "ok $i - columnar"
-            : "not ok $i - columnar bad shape")
-
-# 7. CTAS round-trip on a persistent file db. Use inline `db => $tmpdb`
-# args rather than `%db` spread — stryke's `eval { fn(…, %hash) }` drops
-# the hash spread (caught while writing this test; tracked separately).
+# ── file-backed db round-trip ───────────────────────────────────────
 val $tmpdb = "/tmp/stryke-duckdb-test-$$.duckdb"
-var $r
-eval {
-    DuckDB::execute("CREATE TABLE t (id INT, name VARCHAR)", db => $tmpdb)
-    DuckDB::execute("INSERT INTO t VALUES (1,'alice'),(2,'bob'),(3,'charlie')", db => $tmpdb)
-    $r = DuckDB::query_scalar("SELECT COUNT(*) FROM t", db => $tmpdb)
-}
-$i++
-p $@ ? "not ok $i - file db CTAS: $@" :
-       ($r == 3 ? "ok $i - file db CTAS" : "not ok $i - file db count=$r")
+DuckDB::execute("CREATE TABLE t (id INT, name VARCHAR)", db => $tmpdb)
+DuckDB::execute("INSERT INTO t VALUES (1,'alice'),(2,'bob'),(3,'charlie')", db => $tmpdb)
+assert_eq DuckDB::query_scalar("SELECT COUNT(*) FROM t", db => $tmpdb), 3, "file db: 3 rows inserted"
 
-# 8. inspect on file db
-var $info
-eval { $info = DuckDB::inspect(db => $tmpdb) }
-$i++
-p $@ ? "not ok $i - inspect: $@" :
-       ($info->{file} eq $tmpdb && $info->{file_size} > 0
-            ? "ok $i - inspect"
-            : "not ok $i - inspect bad shape")
+# ── inspect ─────────────────────────────────────────────────────────
+val $info = DuckDB::inspect(db => $tmpdb)
+assert_eq $info->{file}, $tmpdb, "inspect: file path matches"
+assert_gt $info->{file_size}, 0, "inspect: file size > 0"
 
-# 9. tables list
-var @tlist
-eval { @tlist = DuckDB::tables(db => $tmpdb) }
-$i++
-if ($@) {
-    p "not ok $i - tables: $@"
-} else {
-    var $found = 0
-    for val $t (@tlist) {
-        $found = 1 if $t->{name} eq "t"
-    }
-    p ($found ? "ok $i - tables (found t)"
-              : "not ok $i - tables missing t (saw " . len(@tlist) . ")")
-}
+# ── tables list includes ours ───────────────────────────────────────
+val @tlist = DuckDB::tables(db => $tmpdb)
+val $found = grep { $_->{name} eq "t" } @tlist
+assert_ok $found, "tables: contains 't'"
 
+# cleanup
 unlink $tmpdb if -e $tmpdb
 unlink "$tmpdb.wal" if -e "$tmpdb.wal"
+
+test_run
