@@ -208,17 +208,26 @@ fn value_to_tosql(v: &Value) -> Box<dyn duckdb::ToSql> {
 
 fn run_query(conn: &mut Connection, sql: &str, params: &[Value]) -> Result<Value> {
     let mut stmt = conn.prepare(sql)?;
-    let col_count = stmt.column_count();
-    let names: Vec<String> = (0..col_count)
-        .map(|i| {
-            stmt.column_name(i)
-                .map(|s| s.to_string())
-                .unwrap_or_else(|_| "?".to_string())
-        })
-        .collect();
     let boxed: Vec<Box<dyn duckdb::ToSql>> = params.iter().map(value_to_tosql).collect();
     let refs: Vec<&dyn duckdb::ToSql> = boxed.iter().map(|b| b.as_ref()).collect();
+    // duckdb-1.10503 `column_count`/`column_name` panic ("statement was not
+    // executed yet") if called before `stmt.query()` binds the params and
+    // resolves the arrow schema. Bind first; introspect column metadata via
+    // `rows.as_ref()` once the rowset is live; then iterate.
     let mut rows = stmt.query(duckdb::params_from_iter(refs))?;
+    let (col_count, names): (usize, Vec<String>) = {
+        let stmt_ref = rows.as_ref().expect("rows backed by a live statement");
+        let c = stmt_ref.column_count();
+        let n: Vec<String> = (0..c)
+            .map(|i| {
+                stmt_ref
+                    .column_name(i)
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|_| "?".to_string())
+            })
+            .collect();
+        (c, n)
+    };
     let mut out: Vec<Value> = Vec::new();
     while let Some(row) = rows.next()? {
         let mut obj = Map::new();
