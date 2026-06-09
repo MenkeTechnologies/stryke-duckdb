@@ -210,7 +210,11 @@ fn run_query(conn: &mut Connection, sql: &str, params: &[Value]) -> Result<Value
     let mut stmt = conn.prepare(sql)?;
     let col_count = stmt.column_count();
     let names: Vec<String> = (0..col_count)
-        .map(|i| stmt.column_name(i).map(|s| s.to_string()).unwrap_or_else(|_| "?".to_string()))
+        .map(|i| {
+            stmt.column_name(i)
+                .map(|s| s.to_string())
+                .unwrap_or_else(|_| "?".to_string())
+        })
         .collect();
     let boxed: Vec<Box<dyn duckdb::ToSql>> = params.iter().map(value_to_tosql).collect();
     let refs: Vec<&dyn duckdb::ToSql> = boxed.iter().map(|b| b.as_ref()).collect();
@@ -230,9 +234,7 @@ fn run_query(conn: &mut Connection, sql: &str, params: &[Value]) -> Result<Value
 
 #[no_mangle]
 pub extern "C" fn duckdb__version(args: *const c_char) -> *const c_char {
-    ffi_call(args, |_| {
-        Ok(json!({"version": env!("CARGO_PKG_VERSION")}))
-    })
+    ffi_call(args, |_| Ok(json!({"version": env!("CARGO_PKG_VERSION")})))
 }
 
 #[no_mangle]
@@ -271,7 +273,10 @@ pub extern "C" fn duckdb__inspect(args: *const c_char) -> *const c_char {
                     c.prepare("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = current_schema()")?;
                 let mut r = s.query([])?;
                 if let Some(row) = r.next()? {
-                    info.insert("table_count".to_string(), value_ref_to_json(row.get_ref(0)?));
+                    info.insert(
+                        "table_count".to_string(),
+                        value_ref_to_json(row.get_ref(0)?),
+                    );
                 }
             }
             Ok(Value::Object(info))
@@ -282,11 +287,11 @@ pub extern "C" fn duckdb__inspect(args: *const c_char) -> *const c_char {
 #[no_mangle]
 pub extern "C" fn duckdb__query(args: *const c_char) -> *const c_char {
     ffi_call(args, |v| {
-        let sql = v["sql"].as_str().ok_or_else(|| anyhow!("missing sql"))?.to_string();
-        let params: Vec<Value> = v["params"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
+        let sql = v["sql"]
+            .as_str()
+            .ok_or_else(|| anyhow!("missing sql"))?
+            .to_string();
+        let params: Vec<Value> = v["params"].as_array().cloned().unwrap_or_default();
         with_conn(&v, |c| run_query(c, &sql, &params))
     })
 }
@@ -294,11 +299,11 @@ pub extern "C" fn duckdb__query(args: *const c_char) -> *const c_char {
 #[no_mangle]
 pub extern "C" fn duckdb__execute(args: *const c_char) -> *const c_char {
     ffi_call(args, |v| {
-        let sql = v["sql"].as_str().ok_or_else(|| anyhow!("missing sql"))?.to_string();
-        let params: Vec<Value> = v["params"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
+        let sql = v["sql"]
+            .as_str()
+            .ok_or_else(|| anyhow!("missing sql"))?
+            .to_string();
+        let params: Vec<Value> = v["params"].as_array().cloned().unwrap_or_default();
         with_conn(&v, |c| {
             let boxed: Vec<Box<dyn duckdb::ToSql>> = params.iter().map(value_to_tosql).collect();
             let refs: Vec<&dyn duckdb::ToSql> = boxed.iter().map(|b| b.as_ref()).collect();
@@ -311,7 +316,10 @@ pub extern "C" fn duckdb__execute(args: *const c_char) -> *const c_char {
 #[no_mangle]
 pub extern "C" fn duckdb__exec(args: *const c_char) -> *const c_char {
     ffi_call(args, |v| {
-        let sql = v["sql"].as_str().ok_or_else(|| anyhow!("missing sql"))?.to_string();
+        let sql = v["sql"]
+            .as_str()
+            .ok_or_else(|| anyhow!("missing sql"))?
+            .to_string();
         with_conn(&v, |c| {
             c.execute_batch(&sql)?;
             Ok(json!({"ok": true}))
@@ -361,10 +369,7 @@ pub extern "C" fn duckdb__import(args: *const c_char) -> *const c_char {
             c.execute_batch(&sql)?;
             let mut s = c.prepare(&format!("SELECT COUNT(*) FROM {}", table))?;
             let mut r = s.query([])?;
-            let n: i64 = r
-                .next()?
-                .map(|row| row.get(0).unwrap_or(0i64))
-                .unwrap_or(0);
+            let n: i64 = r.next()?.map(|row| row.get(0).unwrap_or(0i64)).unwrap_or(0);
             Ok(json!({"table": table, "rows": n}))
         })
     })
@@ -386,7 +391,12 @@ pub extern "C" fn duckdb__export(args: *const c_char) -> *const c_char {
             "parquet" => "FORMAT PARQUET",
             "csv" => "FORMAT CSV, HEADER",
             "json" => "FORMAT JSON",
-            other => return Err(anyhow!("export kind must be parquet|csv|json, got {}", other)),
+            other => {
+                return Err(anyhow!(
+                    "export kind must be parquet|csv|json, got {}",
+                    other
+                ))
+            }
         };
         let sql = format!(
             "COPY (SELECT * FROM {}) TO '{}' ({})",
