@@ -1,15 +1,15 @@
-# lib/DuckDB.stk — DuckDB analytical SQL for stryke (`use DuckDB`).
-#
-# Thin wrapper around the `stryke-duckdb` cdylib's `duckdb__*` exports.
-# The cdylib is dlopened in-process on first `use DuckDB` (see stryke's
-# `pkg/commands.rs::try_load_ffi_for`) and registers each export as a
-# stryke-callable function via `rust_ffi::load_cdylib`.
-#
-# Replaces the v1 helper-binary model (fork(2) + exec(2) + fresh
-# duckdb::Connection per call — `:memory:` was empty every time). The
-# cdylib caches one `duckdb::Connection` per `(path, session, read_only)`
-# tuple in `OnceCell<Mutex<HashMap>>` for the life of the stryke process —
-# `:memory:` databases now persist across calls.
+## lib/DuckDB.stk — DuckDB analytical SQL for stryke (`use DuckDB`).
+##
+## Thin wrapper around the `stryke-duckdb` cdylib's `duckdb__*` exports.
+## The cdylib is dlopened in-process on first `use DuckDB` (see stryke's
+## `pkg/commands.rs::try_load_ffi_for`) and registers each export as a
+## stryke-callable function via `rust_ffi::load_cdylib`.
+##
+## Replaces the v1 helper-binary model (fork(2) + exec(2) + fresh
+## duckdb::Connection per call — `:memory:` was empty every time). The
+## cdylib caches one `duckdb::Connection` per `(path, session, read_only)`
+## tuple in `OnceCell<Mutex<HashMap>>` for the life of the stryke process —
+## `:memory:` databases now persist across calls.
 
 package DuckDB
 
@@ -23,9 +23,9 @@ fn DuckDB::_decode ($name, $json) {
     $o
 }
 
-# Build the request hash: connection params from %opts plus the per-op
-# fields the caller supplies. `db` is the user-facing name for the file
-# path (matches the v1 CLI flag); the cdylib reads it as `path`.
+## Build the request hash: connection params from %opts plus the per-op
+## fields the caller supplies. `db` is the user-facing name for the file
+## path (matches the v1 CLI flag); the cdylib reads it as `path`.
 fn DuckDB::_req ($extra, $opts) {
     my %r = %$extra
     $r{path} = $opts->{db}   if exists $opts->{db}   && defined $opts->{db}
@@ -82,9 +82,9 @@ fn DuckDB::_query_impl ($sql, $o) {
     @{ $res->{rows} }
 }
 
-# Callback fires per row. The cdylib returns all rows in one call (no
-# subprocess pipe to stream from), so this is buffered iteration — but
-# every per-row latency the v1 subprocess model paid is gone.
+## Callback fires per row. The cdylib returns all rows in one call (no
+## subprocess pipe to stream from), so this is buffered iteration — but
+## every per-row latency the v1 subprocess model paid is gone.
 fn DuckDB::query_stream ($sql, %opts) {
     die "DuckDB::query_stream: callback => sub { … } required" unless defined $opts{callback}
     my $cb = $opts{callback}
@@ -119,8 +119,8 @@ fn DuckDB::query_scalar ($sql, %opts) {
     $r[0]->{$keys[0]}
 }
 
-# Shorthand: SELECT * FROM <source> [LIMIT N]. `source` may be a bare
-# table name or a path/URL — DuckDB resolves both.
+## Shorthand: SELECT * FROM <source> [LIMIT N]. `source` may be a bare
+## table name or a path/URL — DuckDB resolves both.
 fn DuckDB::dump ($source, %opts) {
     my $r = DuckDB::_req({ source => $source, limit => $opts{limit} }, \%opts)
     my $res = DuckDB::_decode("dump", duckdb__dump(to_json($r)))
@@ -145,8 +145,8 @@ fn DuckDB::exec_file ($path, %opts) {
     DuckDB::_decode("exec", duckdb__exec(to_json($r)))
 }
 
-# Import a parquet/csv/json file as a table.
-# %opts: kind (parquet|csv|json|auto), plus connection.
+## Import a parquet/csv/json file as a table.
+## %opts: kind (parquet|csv|json|auto), plus connection.
 fn DuckDB::import ($path, $table, %opts) {
     my $r = DuckDB::_req(
         { path => $path, table => $table, kind => ($opts{kind} // "auto") },
@@ -155,7 +155,7 @@ fn DuckDB::import ($path, $table, %opts) {
     DuckDB::_decode("import", duckdb__import(to_json($r)))
 }
 
-# Export a table to parquet/csv/json.
+## Export a table to parquet/csv/json.
 fn DuckDB::export ($table, $path, %opts) {
     my $r = DuckDB::_req(
         { table => $table, path => $path, kind => ($opts{kind} // "parquet") },
