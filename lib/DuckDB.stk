@@ -15,6 +15,7 @@ package DuckDB
 
 # ── error dispatch ────────────────────────────────────────────────────
 
+## Decode the cdylib's JSON return; die on `{error}` payload.
 fn DuckDB::_decode ($name, $json) {
     my $o = from_json $json
     if (ref $o eq "HASH" && exists $o->{error}) {
@@ -38,17 +39,20 @@ fn DuckDB::_req ($extra, $opts) {
 
 # ── version + ping ──────────────────────────────────────────────────
 
+## Return the package version string.
 fn DuckDB::version {
     my $o = DuckDB::_decode("version", duckdb__version("{}"))
     $o->{version}
 }
 
+## Connectivity probe — returns 1 on success, 0 on failure.
 fn DuckDB::ping (%opts) {
     my $r = DuckDB::_req({}, \%opts)
     my $o = DuckDB::_decode("ping", duckdb__ping(to_json($r)))
     $o->{ok} ? 1 : 0
 }
 
+## Returns { duckdb_version, path, table_count } summary.
 fn DuckDB::inspect (%opts) {
     my $r = DuckDB::_req({}, \%opts)
     DuckDB::_decode("inspect", duckdb__inspect(to_json($r)))
@@ -56,10 +60,12 @@ fn DuckDB::inspect (%opts) {
 
 # ── read paths ──────────────────────────────────────────────────────
 
+## Run a SELECT and return rows as hashrefs.
 fn DuckDB::query ($sql, %opts) {
     DuckDB::_query_impl($sql, \%opts)
 }
 
+## Internal query implementation; see public wrappers.
 fn DuckDB::_query_impl ($sql, $o) {
     my $sql_full = defined $o->{limit} ? "$sql LIMIT $o->{limit}" : $sql
     my $params = $o->{bind} // []
@@ -97,12 +103,14 @@ fn DuckDB::query_stream ($sql, %opts) {
     $n
 }
 
+## Run a SELECT LIMIT 1; return one row hashref or undef.
 fn DuckDB::query_one ($sql, %opts) {
     $opts{limit} = 1
     my @r = DuckDB::_query_impl($sql, \%opts)
     @r ? $r[0] : undef
 }
 
+## Run a SELECT; return the first column as a flat list.
 fn DuckDB::query_col ($sql, %opts) {
     my @rows = DuckDB::_query_impl($sql, \%opts)
     return () unless @rows
@@ -111,6 +119,7 @@ fn DuckDB::query_col ($sql, %opts) {
     map { $_->{$first} } @rows
 }
 
+## Run a SELECT LIMIT 1; return the first cell of the first row.
 fn DuckDB::query_scalar ($sql, %opts) {
     $opts{limit} = 1
     my @r = DuckDB::_query_impl($sql, \%opts)
@@ -129,12 +138,14 @@ fn DuckDB::dump ($source, %opts) {
 
 # ── DDL / DML ───────────────────────────────────────────────────────
 
+## Run a non-SELECT statement; returns { affected }.
 fn DuckDB::execute ($sql, %opts) {
     my $params = $opts{bind} // []
     my $r = DuckDB::_req({ sql => $sql, params => $params }, \%opts)
     DuckDB::_decode("execute", duckdb__execute(to_json($r)))
 }
 
+## Read SQL from $path and run as a multi-statement script.
 fn DuckDB::exec_file ($path, %opts) {
     die "DuckDB::exec_file: file `$path` not found" unless -e $path
     open my $fh, "<", $path or die "DuckDB::exec_file: open $path: $!"
@@ -166,12 +177,14 @@ fn DuckDB::export ($table, $path, %opts) {
 
 # ── metadata ────────────────────────────────────────────────────────
 
+## List tables in the current schema.
 fn DuckDB::tables (%opts) {
     my $r = DuckDB::_req({}, \%opts)
     my $o = DuckDB::_decode("tables", duckdb__tables(to_json($r)))
     map { { name => $_ } } @{ $o->{tables} }
 }
 
+## DESCRIBE TABLE $table — returns column list.
 fn DuckDB::schema ($table, %opts) {
     my $r = DuckDB::_req({ table => $table }, \%opts)
     DuckDB::_decode("schema", duckdb__schema(to_json($r)))
