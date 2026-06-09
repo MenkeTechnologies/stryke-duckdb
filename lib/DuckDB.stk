@@ -190,4 +190,3 @@ fn DuckDB::schema ($table, %opts) {
     DuckDB::_decode("schema", duckdb__schema(to_json($r)))
 }
 
-1
