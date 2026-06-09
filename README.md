@@ -29,9 +29,9 @@ need them, full standard SQL on top. Opt-in package tier.
 - [\[0x00\] Why this is one of the most useful stryke packages](#0x00-why-this-is-one-of-the-most-useful-stryke-packages)
 - [\[0x01\] Install](#0x01-install)
 - [\[0x02\] Quick start](#0x02-quick-start)
-- [\[0x03\] CLI: `duck`](#0x03-cli-duck)
+- [\[0x03\] Connection options](#0x03-connection-options)
 - [\[0x04\] API reference](#0x04-api-reference)
-- [\[0x05\] Helper protocol](#0x05-helper-protocol)
+- [\[0x05\] FFI layer](#0x05-ffi-layer)
 - [\[0x06\] Tests](#0x06-tests)
 - [\[0x07\] DuckDB type encoding](#0x07-duckdb-type-encoding)
 - [\[0x08\] Dev workflow](#0x08-dev-workflow)
@@ -62,10 +62,21 @@ inspected.
 
 ## [0x01] Install
 
+From a release (no rustc or libduckdb compile on the consumer machine —
+the cdylib bundles libduckdb statically):
+
+```sh
+s pkg install -g github.com/MenkeTechnologies/stryke-duckdb
+```
+
+From a local checkout (publisher / contributor workflow — first run
+compiles libduckdb ~3-5 min, then installs into
+`~/.stryke/store/duckdb@<version>/`):
+
 ```sh
 cd ~/projects/stryke-duckdb
-cargo build --release          # first run compiles libduckdb (~3-5 min)
-s pkg install -g .             # installs `duck` and `duck-build` CLIs
+cargo build --release
+s pkg install -g .
 ```
 
 Or:
@@ -120,30 +131,35 @@ DuckDB::query_stream "SELECT * FROM events",
     callback => sub ($row) { process $row }
 ```
 
-## [0x03] CLI: `duck`
+## [0x03] Connection options
 
-```sh
-duck query    "SELECT * FROM 'events.parquet' LIMIT 10"
-duck query    "SELECT ? AS r" --bind='[42]' --columnar
-duck execute  "CREATE TABLE t (id INT)" --db=app.duckdb
-duck exec     --file=migrate.sql --db=app.duckdb
-duck dump     events.parquet --where='ts > now() - INTERVAL 1 DAY' --limit=100
-duck import   events.parquet --table=events --kind=parquet --db=app.duckdb --replace
-duck export   --table=events events.zstd.parquet --kind=parquet --compression=zstd --db=app.duckdb
-duck tables   --db=app.duckdb
-duck schema   --table=events --db=app.duckdb
-duck inspect  --db=app.duckdb
-duck ping
-```
-
-Global flags (also via env vars):
+Every `DuckDB::*` op accepts `%opts` as its final argument. Connection
+fields the cdylib understands (matching the v1 helper-binary flags):
 
 ```
--D, --db PATH                 path to `.duckdb` file ($DUCKDB_FILE). Default: in-memory.
-    --read-only               open the file db read-only
--e, --extension NAME          INSTALL + LOAD a DuckDB extension on connect (repeatable)
--p, --pragma K=V              `SET <k>=<v>;` on connect (repeatable)
+db          → path to a `.duckdb` file. Omit for `:memory:` (default).
+session     → name for distinct `:memory:` instances. Defaults to "_default";
+              same-session calls share the same in-memory db.
+read_only   → 1 to open the file db RO
+pragmas     → \@stmts — `SET name=value;` strings to run on connect
+extensions  → \@names — `INSTALL <name>; LOAD <name>;` for each on connect
 ```
+
+Inline:
+
+```stryke
+DuckDB::query "SELECT COUNT(*) FROM 'events.parquet'",
+    extensions => ["httpfs"]
+
+DuckDB::execute "INSERT INTO users VALUES (?, ?, ?)",
+    bind => [42, "alice", 1.5],
+    db   => "app.duckdb"
+```
+
+The cdylib caches one `duckdb::Connection` per `(db, session, read_only)`
+tuple — `:memory:` databases persist across calls (the v1 helper binary
+got a fresh empty `:memory:` every fork). Two calls with the same
+`db => "app.duckdb"` share the same connection object.
 
 Common extensions:
 
@@ -194,31 +210,26 @@ DuckDB::inspect  %opts → { version, file, file_size, databases: [...] }
 DuckDB::ping     %opts → 1 | ""
 ```
 
-### Helper plumbing
+## [0x05] FFI layer
 
-```stryke
-DuckDB::helper_path()   → $abs_path
-DuckDB::ensure_built()  → $abs_path
-DuckDB::version()       → "stryke-duckdb-helper <version>"
-```
+Each `DuckDB::*` wrapper builds a JSON args dict and calls a sibling
+`duckdb__*` symbol resolved out of `libstryke_duckdb.{dylib,so}`. The
+cdylib is dlopened in-process on first `use DuckDB` (via stryke's
+`pkg::commands::try_load_ffi_for` resolver hook) and caches one
+`duckdb::Connection` per `(db, session, read_only)` tuple in
+`OnceCell<Mutex<HashMap>>` for the life of the stryke process.
 
-## [0x05] Helper protocol
+Wire shape (cdylib responses):
 
-```sh
-stryke-duckdb-helper query "SELECT 1+1"
-stryke-duckdb-helper --db app.duckdb execute 'CREATE TABLE t (id INT)'
-stryke-duckdb-helper --db app.duckdb import data.parquet --table=t --kind=parquet
-stryke-duckdb-helper --db app.duckdb export --table=t out.parquet --kind=parquet
-stryke-duckdb-helper -e httpfs query "SELECT COUNT(*) FROM 'https://x.com/y.parquet'"
-```
-
-Output:
-
-* `query`, `dump` → NDJSON rows. `--columnar` for one `{columns, num_rows, rows}` object.
-* `execute` → `{affected_rows}`
-* `import`/`export` → `{table, kind, ...}` summary
-* `tables` → NDJSON `{name, schema}`
-* `schema`, `inspect`, `ping` → single JSON object / line
+* `query`, `dump` → `{"columns": [...], "rows": [{col: val, ...}, ...]}`
+* `execute` → `{"affected": <n>}`
+* `exec` → `{"ok": true}`
+* `import` → `{"table": ..., "rows": <n>}`
+* `export` → `{"path": ..., "kind": ...}`
+* `tables` → `{"tables": [...]}`
+* `schema` → `{"table": ..., "columns": [{name, type, nullable}, ...]}`
+* `inspect`, `ping` → `{...}`
+* Errors → `{"error": "<msg>"}` — the wrapper `die`s with it
 
 ## [0x06] Tests
 
@@ -270,11 +281,11 @@ make clean
 ```
 stryke-duckdb/
   stryke.toml                      # stryke package manifest
-  Cargo.toml                       # Rust helper crate manifest
+  Cargo.toml                       # cdylib crate manifest
   Makefile
-  src/main.rs                      # single-file helper
+  src/lib.rs                       # cdylib — duckdb__* extern "C" exports + persistent conn cache
   lib/
-    DuckDB.stk                     # `use DuckDB`
+    DuckDB.stk                     # `use DuckDB` — thin wrapper around the FFI symbols
   t/
     test_duckdb.stk                # 9-test self-contained round-trip
   examples/

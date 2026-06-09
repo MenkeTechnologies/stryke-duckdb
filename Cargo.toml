@@ -1,32 +1,29 @@
 [package]
-name = "stryke-duckdb-helper"
-version = "0.1.1"
+name = "stryke-duckdb"
+version = "0.2.0"
 edition = "2021"
-description = "DuckDB bridge binary for the stryke `duckdb` package"
+description = "DuckDB cdylib for the stryke `duckdb` package — dlopened in-process via stryke's FFI bridge."
 authors = ["MenkeTechnologies"]
 license = "MIT"
 repository = "https://github.com/MenkeTechnologies/stryke-duckdb"
 homepage = "https://menketechnologies.github.io/stryke-duckdb/"
 publish = false
 
-[[bin]]
-name = "stryke-duckdb-helper"
-path = "src/main.rs"
+[lib]
+name = "stryke_duckdb"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
 
 [dependencies]
-# `bundled` compiles libduckdb from source — single static binary, no
-# system .so. Adds ~3-5 minutes to a cold build; cargo caches the
-# artifact after that.
+# `bundled` compiles libduckdb from source — single static cdylib, no
+# system .so dep at runtime. Adds ~3-5 minutes to a cold build; cargo
+# caches the artifact after that.
 duckdb = { version = "1", features = ["bundled", "json", "parquet"] }
-arrow = "58"
-arrow-json = "58"
-clap = { version = "4", default-features = false, features = [
-    "std", "derive", "help", "usage", "error-context", "env",
-] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 anyhow = "1"
-base64 = "0.22"
+once_cell = "1"
+parking_lot = "0.12"
 
 [profile.release]
 opt-level = 3

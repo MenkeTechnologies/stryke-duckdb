@@ -9,7 +9,7 @@ help:
 	  '  make release   - cargo build --release  (first run compiles libduckdb, ~3-5 min)' \
 	  '  make debug     - cargo build' \
 	  '  make test      - cargo test then `s test t/`' \
-	  '  make install   - `s pkg install -g .` (registers duck/duck-build CLI launchers)' \
+	  '  make install   - `s pkg install -g .` (cdylib lands in ~/.stryke/store/duckdb@<ver>/)' \
 	  '  make clean     - cargo clean'
 
 release:

@@ -1,230 +1,99 @@
-# lib/DuckDB.stk — embedded DuckDB SQL engine for stryke.
+# lib/DuckDB.stk — DuckDB analytical SQL for stryke (`use DuckDB`).
 #
-# DuckDB runs in-process via the bundled `stryke-duckdb-helper` binary.
-# Output is NDJSON (queries) or single JSON (DDL / metadata).
+# Thin wrapper around the `stryke-duckdb` cdylib's `duckdb__*` exports.
+# The cdylib is dlopened in-process on first `use DuckDB` (see stryke's
+# `pkg/commands.rs::try_load_ffi_for`) and registers each export as a
+# stryke-callable function via `rust_ffi::load_cdylib`.
 #
-# Connection options every public fn understands (hashref-internal to
-# work around the stryke %opts-reslurp issue):
-#   db          path to a `.duckdb` file. Default: in-memory.
-#   pragmas     arrayref of `SET k=v` to apply on connect.
-#   extensions  arrayref of DuckDB extensions to INSTALL+LOAD (httpfs, aws, …).
-#   read_only   1 to open the file db read-only.
-#
-# Killer feature: SQL can read files directly without import.
-#   `SELECT * FROM 'data.parquet' WHERE x > 5` works against any local
-#   path, https://... URL, or s3://.. / gs://.. URI (with the httpfs /
-#   aws extensions).
+# Replaces the v1 helper-binary model (fork(2) + exec(2) + fresh
+# duckdb::Connection per call — `:memory:` was empty every time). The
+# cdylib caches one `duckdb::Connection` per `(path, session, read_only)`
+# tuple in `OnceCell<Mutex<HashMap>>` for the life of the stryke process —
+# `:memory:` databases now persist across calls.
 
 package DuckDB
 
-our $HELPER
+# ── error dispatch ────────────────────────────────────────────────────
 
-fn DuckDB::pkg_root {
-    my @parts = split "/", __FILE__
-    pop @parts
-    pop @parts
-    my $root = join "/", @parts
-    $root ne "" ? $root : "."
+fn DuckDB::_decode ($name, $json) {
+    my $o = from_json $json
+    if (ref $o eq "HASH" && exists $o->{error}) {
+        die "DuckDB::$name: $o->{error}"
+    }
+    $o
 }
 
-fn DuckDB::helper_path {
-    return $DuckDB::HELPER if defined $DuckDB::HELPER && -x $DuckDB::HELPER
-
-    if (exists $ENV{STRYKE_DUCKDB_HELPER} && $ENV{STRYKE_DUCKDB_HELPER} ne "") {
-        my $p = $ENV{STRYKE_DUCKDB_HELPER}
-        die "stryke-duckdb: STRYKE_DUCKDB_HELPER=$p is not an executable file" unless -x $p
-        $DuckDB::HELPER = $p
-        return $p
+# Build the request hash: connection params from %opts plus the per-op
+# fields the caller supplies. `db` is the user-facing name for the file
+# path (matches the v1 CLI flag); the cdylib reads it as `path`.
+fn DuckDB::_req ($extra, $opts) {
+    my %r = %$extra
+    $r{path} = $opts->{db}   if exists $opts->{db}   && defined $opts->{db}
+    $r{path} = $opts->{path} if exists $opts->{path} && defined $opts->{path}
+    for my $k (qw(session read_only pragmas extensions)) {
+        $r{$k} = $opts->{$k} if exists $opts->{$k} && defined $opts->{$k}
     }
-
-    my $root = DuckDB::pkg_root()
-    for my $cand (
-        "$root/target/release/stryke-duckdb-helper",
-        "$root/target/debug/stryke-duckdb-helper",
-        "$root/bin/stryke-duckdb-helper",
-    ) {
-        if (-x $cand) {
-            $DuckDB::HELPER = $cand
-            return $cand
-        }
-    }
-
-    my $which = qx{command -v stryke-duckdb-helper 2>/dev/null}
-    chomp $which
-    if ($which ne "" && -x $which) {
-        $DuckDB::HELPER = $which
-        return $which
-    }
-
-    die "stryke-duckdb: helper binary not found.\n" .
-        "  Build it once with:  cd $root && cargo build --release\n" .
-        "  Or set STRYKE_DUCKDB_HELPER=/path/to/stryke-duckdb-helper\n"
+    \%r
 }
 
-fn DuckDB::ensure_built {
-    my $root = DuckDB::pkg_root()
-    for my $cand ("$root/target/release/stryke-duckdb-helper",
-                  "$root/target/debug/stryke-duckdb-helper") {
-        return $cand if -x $cand
-    }
-    return DuckDB::helper_path() if exists $ENV{STRYKE_DUCKDB_HELPER}
-
-    p "stryke-duckdb: building helper (cargo build --release)..."
-    my $rc = system "cd " . DuckDB::_shq($root) . " && cargo build --release"
-    die "stryke-duckdb: cargo build failed (rc=$rc)" if $rc != 0
-    DuckDB::helper_path()
-}
-
-fn DuckDB::_shq ($s) {
-    my $t = $s
-    $t =~ s/'/'\\''/g
-    "'$t'"
-}
-
-fn DuckDB::_conn_argv ($o) {
-    my @argv = (DuckDB::_shq(DuckDB::helper_path()))
-    push @argv, "--db", DuckDB::_shq($o->{db}) if defined $o->{db}
-    push @argv, "--read-only" if $o->{read_only}
-    if (defined $o->{pragmas} && ref($o->{pragmas}) eq "ARRAY") {
-        for my $kv (@{ $o->{pragmas} }) {
-            push @argv, "--pragma", DuckDB::_shq($kv)
-        }
-    }
-    if (defined $o->{extensions} && ref($o->{extensions}) eq "ARRAY") {
-        for my $e (@{ $o->{extensions} }) {
-            push @argv, "--extension", DuckDB::_shq($e)
-        }
-    }
-    @argv
-}
-
-fn DuckDB::_drain_ndjson ($fh) {
-    my @rows
-    while (my $line = <$fh>) {
-        chomp $line
-        next if $line eq ""
-        push @rows, from_json $line
-    }
-    @rows
-}
-
-fn DuckDB::_run_ndjson ($argv) {
-    my $cmd = join " ", @$argv
-    if ($ENV{STRYKE_DUCKDB_DEBUG}) {
-        warn "DEBUG duckdb cmd: $cmd\n"
-    }
-    open my $fh, "-|", $cmd or die "stryke-duckdb: spawn failed: $!"
-    my @rows = DuckDB::_drain_ndjson $fh
-    close $fh or die "stryke-duckdb: helper exited ($?)"
-    @rows
-}
-
-fn DuckDB::_run_json ($argv) {
-    my $cmd = join " ", @$argv
-    if ($ENV{STRYKE_DUCKDB_DEBUG}) {
-        warn "DEBUG duckdb cmd: $cmd\n"
-    }
-    my $out = qx{$cmd}
-    die "stryke-duckdb: helper exited ($?)" if $? != 0
-    from_json $out
-}
+# ── version + ping ──────────────────────────────────────────────────
 
 fn DuckDB::version {
-    my $bin = DuckDB::_shq(DuckDB::helper_path())
-    my $v = qx{$bin --version 2>&1}
-    chomp $v
-    $v
+    my $o = DuckDB::_decode("version", duckdb__version("{}"))
+    $o->{version}
 }
 
 fn DuckDB::ping (%opts) {
-    my @argv = DuckDB::_conn_argv(\%opts)
-    push @argv, "ping"
-    my $cmd = join " ", @argv
-    my $out = qx{$cmd 2>/dev/null}
-    chomp $out
-    $? == 0 && $out =~ /^ok\b/
+    my $r = DuckDB::_req({}, \%opts)
+    my $o = DuckDB::_decode("ping", duckdb__ping(to_json($r)))
+    $o->{ok} ? 1 : 0
 }
 
-# Returns: { version, file, file_size, databases: [...] }
 fn DuckDB::inspect (%opts) {
-    my @argv = DuckDB::_conn_argv(\%opts)
-    push @argv, "inspect"
-    DuckDB::_run_json(\@argv)
+    my $r = DuckDB::_req({}, \%opts)
+    DuckDB::_decode("inspect", duckdb__inspect(to_json($r)))
 }
 
-# ---------------------------------------------------------------------------
-# Read paths
-# ---------------------------------------------------------------------------
+# ── read paths ──────────────────────────────────────────────────────
 
-# Returns an array of row-hashrefs.
 fn DuckDB::query ($sql, %opts) {
     DuckDB::_query_impl($sql, \%opts)
 }
 
 fn DuckDB::_query_impl ($sql, $o) {
-    my @argv = DuckDB::_conn_argv($o)
-    push @argv, "query", DuckDB::_shq($sql)
-    if (defined $o->{bind}) {
-        push @argv, "--bind", DuckDB::_shq(to_json $o->{bind})
-    }
-    push @argv, "--columnar" if $o->{columnar}
-    push @argv, "--with-meta" if $o->{with_meta}
-    if (defined $o->{limit}) {
-        push @argv, "--limit", DuckDB::_shq($o->{limit})
-    }
+    my $sql_full = defined $o->{limit} ? "$sql LIMIT $o->{limit}" : $sql
+    my $params = $o->{bind} // []
+    my $r = DuckDB::_req({ sql => $sql_full, params => $params }, $o)
+    my $res = DuckDB::_decode("query", duckdb__query(to_json($r)))
 
     if ($o->{columnar}) {
-        return DuckDB::_run_json(\@argv)
+        my %cols
+        for my $c (@{ $res->{columns} }) { $cols{$c} = [] }
+        for my $row (@{ $res->{rows} }) {
+            for my $c (@{ $res->{columns} }) {
+                push @{ $cols{$c} }, $row->{$c}
+            }
+        }
+        return { columns => $res->{columns}, data => \%cols }
     }
     if ($o->{with_meta}) {
-        my $cmd = join " ", @argv
-        my $out = qx{$cmd}
-        die "DuckDB::query: helper exited ($?)" if $? != 0
-        return DuckDB::_parse_metarows($out)
+        return { meta => { columns => $res->{columns} }, rows => $res->{rows} }
     }
-    DuckDB::_run_ndjson(\@argv)
+    @{ $res->{rows} }
 }
 
-fn DuckDB::_parse_metarows ($buf) {
-    my @lines = split /\n/, $buf
-    my @rows
-    my $meta = {}
-    for my $line (@lines) {
-        next if $line eq ""
-        my $v = from_json $line
-        if (ref($v) eq "HASH" && exists $v->{meta}) {
-            $meta = $v->{meta}
-        } else {
-            push @rows, $v
-        }
-    }
-    { meta => $meta, rows => \@rows }
-}
-
-# Streaming variant — callback fires per row, no buffering on the stryke side.
+# Callback fires per row. The cdylib returns all rows in one call (no
+# subprocess pipe to stream from), so this is buffered iteration — but
+# every per-row latency the v1 subprocess model paid is gone.
 fn DuckDB::query_stream ($sql, %opts) {
     die "DuckDB::query_stream: callback => sub { … } required" unless defined $opts{callback}
     my $cb = $opts{callback}
-
-    my @argv = DuckDB::_conn_argv(\%opts)
-    push @argv, "query", DuckDB::_shq($sql)
-    if (defined $opts{bind}) {
-        push @argv, "--bind", DuckDB::_shq(to_json $opts{bind})
-    }
-    if (defined $opts{limit}) {
-        push @argv, "--limit", DuckDB::_shq($opts{limit})
-    }
-    my $cmd = join " ", @argv
-
+    my @rows = DuckDB::_query_impl($sql, \%opts)
     my $n = 0
-    open my $fh, "-|", $cmd or die "DuckDB::query_stream: spawn failed: $!"
-    while (my $line = <$fh>) {
-        chomp $line
-        next if $line eq ""
-        $cb->(from_json $line)
+    for my $row (@rows) {
+        $cb->($row)
         $n++
     }
-    close $fh or die "DuckDB::query_stream: helper exited ($?)"
     $n
 }
 
@@ -250,74 +119,62 @@ fn DuckDB::query_scalar ($sql, %opts) {
     $r[0]->{$keys[0]}
 }
 
-# Shorthand: SELECT * FROM <source> [WHERE …] [ORDER BY …] [LIMIT N].
-# `source` may be a bare table name or a path/URL — DuckDB resolves both.
+# Shorthand: SELECT * FROM <source> [LIMIT N]. `source` may be a bare
+# table name or a path/URL — DuckDB resolves both.
 fn DuckDB::dump ($source, %opts) {
-    my @argv = DuckDB::_conn_argv(\%opts)
-    push @argv, "dump", DuckDB::_shq($source)
-    push @argv, "--columns",  DuckDB::_shq($opts{columns})      if defined $opts{columns}
-    push @argv, "--where",    DuckDB::_shq($opts{where})        if defined $opts{where}
-    push @argv, "--order-by", DuckDB::_shq($opts{order_by})     if defined $opts{order_by}
-    push @argv, "--limit",    DuckDB::_shq($opts{limit})        if defined $opts{limit}
-    DuckDB::_run_ndjson(\@argv)
+    my $r = DuckDB::_req({ source => $source, limit => $opts{limit} }, \%opts)
+    my $res = DuckDB::_decode("dump", duckdb__dump(to_json($r)))
+    @{ $res->{rows} }
 }
 
-# ---------------------------------------------------------------------------
-# DDL / DML
-# ---------------------------------------------------------------------------
+# ── DDL / DML ───────────────────────────────────────────────────────
 
-# Returns { affected_rows }.
 fn DuckDB::execute ($sql, %opts) {
-    my @argv = DuckDB::_conn_argv(\%opts)
-    push @argv, "execute", DuckDB::_shq($sql)
-    if (defined $opts{bind}) {
-        push @argv, "--bind", DuckDB::_shq(to_json $opts{bind})
-    }
-    DuckDB::_run_json(\@argv)
+    my $params = $opts{bind} // []
+    my $r = DuckDB::_req({ sql => $sql, params => $params }, \%opts)
+    DuckDB::_decode("execute", duckdb__execute(to_json($r)))
 }
 
-# Multi-statement script.
 fn DuckDB::exec_file ($path, %opts) {
     die "DuckDB::exec_file: file `$path` not found" unless -e $path
-    my @argv = DuckDB::_conn_argv(\%opts)
-    push @argv, "exec", "--file", DuckDB::_shq($path)
-    DuckDB::_run_json(\@argv)
+    open my $fh, "<", $path or die "DuckDB::exec_file: open $path: $!"
+    local $/
+    my $sql = <$fh>
+    close $fh
+    my $r = DuckDB::_req({ sql => $sql }, \%opts)
+    DuckDB::_decode("exec", duckdb__exec(to_json($r)))
 }
 
 # Import a parquet/csv/json file as a table.
-# %opts: kind (parquet|csv|json|auto), replace, plus connection.
+# %opts: kind (parquet|csv|json|auto), plus connection.
 fn DuckDB::import ($path, $table, %opts) {
-    my @argv = DuckDB::_conn_argv(\%opts)
-    push @argv, "import", DuckDB::_shq($path), "--table", DuckDB::_shq($table)
-    push @argv, "--kind", DuckDB::_shq($opts{kind}) if defined $opts{kind}
-    push @argv, "--replace" if $opts{replace}
-    DuckDB::_run_json(\@argv)
+    my $r = DuckDB::_req(
+        { path => $path, table => $table, kind => ($opts{kind} // "auto") },
+        \%opts
+    )
+    DuckDB::_decode("import", duckdb__import(to_json($r)))
 }
 
 # Export a table to parquet/csv/json.
-# %opts: kind (parquet|csv|json), compression.
 fn DuckDB::export ($table, $path, %opts) {
-    my @argv = DuckDB::_conn_argv(\%opts)
-    push @argv, "export", "--table", DuckDB::_shq($table), DuckDB::_shq($path)
-    push @argv, "--kind", DuckDB::_shq($opts{kind}) if defined $opts{kind}
-    push @argv, "--compression", DuckDB::_shq($opts{compression}) if defined $opts{compression}
-    DuckDB::_run_json(\@argv)
+    my $r = DuckDB::_req(
+        { table => $table, path => $path, kind => ($opts{kind} // "parquet") },
+        \%opts
+    )
+    DuckDB::_decode("export", duckdb__export(to_json($r)))
 }
 
-# ---------------------------------------------------------------------------
-# Metadata
-# ---------------------------------------------------------------------------
+# ── metadata ────────────────────────────────────────────────────────
 
 fn DuckDB::tables (%opts) {
-    my @argv = DuckDB::_conn_argv(\%opts)
-    push @argv, "tables"
-    DuckDB::_run_ndjson(\@argv)
+    my $r = DuckDB::_req({}, \%opts)
+    my $o = DuckDB::_decode("tables", duckdb__tables(to_json($r)))
+    map { { name => $_ } } @{ $o->{tables} }
 }
 
 fn DuckDB::schema ($table, %opts) {
-    my @argv = DuckDB::_conn_argv(\%opts)
-    push @argv, "schema", "--table", DuckDB::_shq($table)
-    DuckDB::_run_json(\@argv)
+    my $r = DuckDB::_req({ table => $table }, \%opts)
+    DuckDB::_decode("schema", duckdb__schema(to_json($r)))
 }
 
 1

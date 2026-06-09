@@ -1,10 +1,14 @@
 # t/test_duckdb.stk — self-contained round-trip via in-memory DuckDB.
+#
+# Requires the cdylib to be loadable. Install once with `s pkg install -g .`
+# from the package root so stryke's FFI bridge dlopens
+# lib/libstryke_duckdb.{dylib,so} on `use DuckDB`.
 
-require "./lib/DuckDB.stk"
+use DuckDB
 
-my $have_helper = eval { DuckDB::helper_path(); 1 }
-unless ($have_helper) {
-    p "1..0 # SKIP helper not built — run `cargo build --release` first"
+my $have_cdylib = eval { DuckDB::version(); 1 }
+unless ($have_cdylib) {
+    p "1..0 # SKIP cdylib not loaded — run `s pkg install -g .` first"
     exit 0
 }
 
