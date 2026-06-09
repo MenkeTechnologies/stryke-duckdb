@@ -222,8 +222,8 @@ fn run_query(conn: &mut Connection, sql: &str, params: &[Value]) -> Result<Value
     let mut out: Vec<Value> = Vec::new();
     while let Some(row) = rows.next()? {
         let mut obj = Map::new();
-        for i in 0..col_count {
-            obj.insert(names[i].clone(), value_ref_to_json(row.get_ref(i)?));
+        for (i, name) in names.iter().enumerate().take(col_count) {
+            obj.insert(name.clone(), value_ref_to_json(row.get_ref(i)?));
         }
         out.push(Value::Object(obj));
     }

@@ -63,31 +63,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked --no-fail-fast
 
-  helper-round-trip:
-    name: Helper round-trip (in-memory + file db)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release --locked
-      - name: query / bind / file db
-        run: |
-          set -euo pipefail
-          H=./target/release/stryke-duckdb-helper
-          $H ping | grep -x 'ok (1)'
-          $H query "SELECT 1+1 AS two, 'hi' AS s" | jq -e '.two == 2 and .s == "hi"'
-          $H query "SELECT ?::INT + ?::INT AS r" --bind='[10,32]' | jq -e '.r == 42'
-          $H query "SELECT n FROM range(5) AS r(n)" --columnar | jq -e '.num_rows == 5'
-
-          DB=/tmp/ci.duckdb
-          $H --db "$DB" execute "CREATE TABLE t (id INT, name VARCHAR)" | jq -e '.affected_rows == 0'
-          $H --db "$DB" execute "INSERT INTO t VALUES (1,'a'),(2,'b'),(3,'c')" | jq -e '.affected_rows == 3'
-          $H --db "$DB" query "SELECT COUNT(*) FROM t" | jq -e '."count_star()" == 3'
-          $H --db "$DB" tables | jq -e '.name == "t"'
-          $H --db "$DB" schema --table=t | jq -e '.columns | length == 2'
-          $H --db "$DB" inspect | jq -e '.file_size > 0'
-
   doc:
     name: Doc
     runs-on: ubuntu-latest
@@ -101,7 +76,7 @@ jobs:
 
   release-build:
     name: Release Build (${{ matrix.target }})
-    needs: [check, test, helper-round-trip]
+    needs: [check, test]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -123,7 +98,7 @@ jobs:
       - uses: actions/upload-artifact@v6
         with:
           name: stryke-duckdb-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/stryke-duckdb-helper
+          path: target/${{ matrix.target }}/release/libstryke_duckdb.*
 
   docs-gates:
     name: Docs gates
