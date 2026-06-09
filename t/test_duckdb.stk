@@ -6,21 +6,21 @@
 
 use DuckDB
 
-my $have_cdylib = eval { DuckDB::version(); 1 }
+val $have_cdylib = eval { DuckDB::version(); 1 }
 unless ($have_cdylib) {
     p "1..0 # SKIP cdylib not loaded — run `s pkg install -g .` first"
     exit 0
 }
 
 p "1..9"
-my $i = 0
+var $i = 0
 
 # 1. ping
 $i++
 p (DuckDB::ping() ? "ok $i - ping" : "not ok $i - ping false")
 
 # 2. plain SELECT (constants)
-my @r
+var @r
 eval { @r = DuckDB::query("SELECT 1+1 AS two, 'hi' AS s") }
 $i++
 p $@ ? "not ok $i - query const: $@" :
@@ -43,14 +43,14 @@ p $@ ? "not ok $i - bind: $@" :
        ($r[0]->{r} == 42 ? "ok $i - bind" : "not ok $i - bind wrong")
 
 # 5. query_scalar
-my $n
+var $n
 eval { $n = DuckDB::query_scalar("SELECT COUNT(*) FROM range(1000)") }
 $i++
 p $@ ? "not ok $i - query_scalar: $@" :
        ($n == 1000 ? "ok $i - query_scalar" : "not ok $i - query_scalar=$n")
 
 # 6. columnar
-my $cw
+var $cw
 eval {
     $cw = DuckDB::query(
         "SELECT id, name FROM (VALUES (1,'a'),(2,'b'),(3,'c')) AS t(id,name)",
@@ -66,8 +66,8 @@ p $@ ? "not ok $i - columnar: $@" :
 # 7. CTAS round-trip on a persistent file db. Use inline `db => $tmpdb`
 # args rather than `%db` spread — stryke's `eval { fn(…, %hash) }` drops
 # the hash spread (caught while writing this test; tracked separately).
-my $tmpdb = "/tmp/stryke-duckdb-test-$$.duckdb"
-my $r
+val $tmpdb = "/tmp/stryke-duckdb-test-$$.duckdb"
+var $r
 eval {
     DuckDB::execute("CREATE TABLE t (id INT, name VARCHAR)", db => $tmpdb)
     DuckDB::execute("INSERT INTO t VALUES (1,'alice'),(2,'bob'),(3,'charlie')", db => $tmpdb)
@@ -78,7 +78,7 @@ p $@ ? "not ok $i - file db CTAS: $@" :
        ($r == 3 ? "ok $i - file db CTAS" : "not ok $i - file db count=$r")
 
 # 8. inspect on file db
-my $info
+var $info
 eval { $info = DuckDB::inspect(db => $tmpdb) }
 $i++
 p $@ ? "not ok $i - inspect: $@" :
@@ -87,14 +87,14 @@ p $@ ? "not ok $i - inspect: $@" :
             : "not ok $i - inspect bad shape")
 
 # 9. tables list
-my @tlist
+var @tlist
 eval { @tlist = DuckDB::tables(db => $tmpdb) }
 $i++
 if ($@) {
     p "not ok $i - tables: $@"
 } else {
-    my $found = 0
-    for my $t (@tlist) {
+    var $found = 0
+    for val $t (@tlist) {
         $found = 1 if $t->{name} eq "t"
     }
     p ($found ? "ok $i - tables (found t)"

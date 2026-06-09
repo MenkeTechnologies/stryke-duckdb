@@ -4,17 +4,17 @@
 
 use DuckDB
 
-my ($src, $db, $table) = @ARGV
+val ($src, $db, $table) = @ARGV
 die "usage: parquet_to_db.stk SRC.parquet DST.duckdb TABLE\n" unless defined $table
 
-my $r = DuckDB::import($src, $table,
+val $r = DuckDB::import($src, $table,
                       kind => "parquet",
                       replace => 1,
                       db => $db)
 p "loaded $r->{num_rows} rows from $r->{source} into $db.$r->{table}"
 
-my @schema = @{ DuckDB::schema($table, db => $db)->{columns} }
+val @schema = @{ DuckDB::schema($table, db => $db)->{columns} }
 p "schema:"
-for my $c (@schema) {
+for val $c (@schema) {
     p sprintf("  %-30s %s", $c->{name}, $c->{type})
 }

@@ -4,14 +4,14 @@
 
 use DuckDB
 
-my ($path, $col) = @ARGV
+val ($path, $col) = @ARGV
 die "usage: aggregate_csv.stk PATH.csv GROUP_COLUMN\n" unless defined $col
 
-my $sql = sprintf("SELECT %s, COUNT(*) AS n FROM read_csv_auto('%s') " .
+val $sql = sprintf("SELECT %s, COUNT(*) AS n FROM read_csv_auto('%s') " .
                   "GROUP BY %s ORDER BY n DESC LIMIT 20",
                   $col, $path, $col)
 
-my @rows = DuckDB::query($sql)
-for my $r (@rows) {
+val @rows = DuckDB::query($sql)
+for val $r (@rows) {
     p sprintf("%-40s %d", $r->{$col} // "(null)", $r->{n})
 }
