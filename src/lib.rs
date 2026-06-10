@@ -20,7 +20,7 @@ use std::os::raw::c_char;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use duckdb::{types::ValueRef, Connection};
 use once_cell::sync::OnceCell;
 use parking_lot::Mutex;
@@ -359,10 +359,12 @@ pub extern "C" fn duckdb__import(args: *const c_char) -> *const c_char {
             .as_str()
             .ok_or_else(|| anyhow!("missing path"))?
             .to_string();
-        let table = v["table"]
-            .as_str()
-            .ok_or_else(|| anyhow!("missing table"))?
-            .to_string();
+        let table = validate_identifier(
+            v["table"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing table"))?,
+            "table",
+        )?;
         let kind = v["kind"].as_str().unwrap_or("auto");
         let reader = match kind {
             "parquet" => format!("read_parquet('{}')", path.replace('\'', "''")),
@@ -384,13 +386,45 @@ pub extern "C" fn duckdb__import(args: *const c_char) -> *const c_char {
     })
 }
 
+/// Validate a DuckDB identifier for safe `format!()` interpolation.
+/// Pre-fix, `duckdb__import` accepted any string in `table` and concatenated
+/// it raw into `CREATE OR REPLACE TABLE {table} AS SELECT * FROM ...` —
+/// a payload like `users; DROP TABLE users` executed both. DuckDB
+/// identifier rules: letter or `_` first; letter, digit, `_`, `$` rest.
+/// `.` allowed for schema-qualified `schema.table`.
+fn validate_identifier(name: &str, what: &str) -> Result<String> {
+    if name.is_empty() {
+        bail!("`{what}` must not be empty");
+    }
+    let valid_start = |c: char| c.is_ascii_alphabetic() || c == '_';
+    let valid_rest = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$';
+    for (i, part) in name.split('.').enumerate() {
+        if part.is_empty() {
+            bail!("`{what}` has empty segment (position {i}) in `{name}`");
+        }
+        let mut chars = part.chars();
+        let first = chars.next().expect("non-empty checked above");
+        if !valid_start(first) {
+            bail!("`{what}` segment `{part}` must start with letter or underscore");
+        }
+        for c in chars {
+            if !valid_rest(c) {
+                bail!("`{what}` segment `{part}` contains invalid character `{c}`");
+            }
+        }
+    }
+    Ok(name.to_string())
+}
+
 #[no_mangle]
 pub extern "C" fn duckdb__export(args: *const c_char) -> *const c_char {
     ffi_call(args, |v| {
-        let table = v["table"]
-            .as_str()
-            .ok_or_else(|| anyhow!("missing table"))?
-            .to_string();
+        let table = validate_identifier(
+            v["table"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing table"))?,
+            "table",
+        )?;
         let path = v["path"]
             .as_str()
             .ok_or_else(|| anyhow!("missing path"))?
@@ -673,6 +707,103 @@ mod tests {
     }
 
     #[test]
+    fn run_query_duplicate_column_names_silently_drop_earlier_row_cells() {
+        // Bug class: row-Map key collision silently discards data. `run_query`
+        // returns `{"columns": [...], "rows": [{col: val, ...}]}`. The
+        // `columns` array is built by index (preserves all names including
+        // duplicates), but each row is a `serde_json::Map` keyed by the
+        // column name string — so `SELECT 1 AS x, 2 AS x` reports two
+        // columns yet ships one `x` field per row, with the LAST column's
+        // value winning. Downstream stryke code that iterates rows by
+        // `for col in columns: row[col]` will read the wrong value for the
+        // earlier `x`. Pinning the current (buggy-but-deterministic) behavior
+        // so the boss sees an explicit failure when (and only when) the row
+        // shape gains disambiguation (e.g. arrayified rows, suffixed keys).
+        let mut conn = Connection::open_in_memory().unwrap();
+        let out = run_query(&mut conn, "SELECT 1 AS x, 2 AS x", &[]).unwrap();
+        let cols = out["columns"].as_array().expect("columns array");
+        assert_eq!(cols.len(), 2, "columns array preserves both duplicates");
+        assert_eq!(cols[0], json!("x"));
+        assert_eq!(cols[1], json!("x"));
+        let rows = out["rows"].as_array().expect("rows array");
+        assert_eq!(rows.len(), 1);
+        let row = rows[0].as_object().expect("row is object");
+        // Map collapsed to one entry — the bug class.
+        assert_eq!(
+            row.len(),
+            1,
+            "row map collapses duplicate keys (silent data loss)"
+        );
+        // serde_json::Map (with preserve_order) keeps the FIRST inserted
+        // key but its VALUE is overwritten by the later insert. The
+        // surviving value is the SECOND column's (2), not the first (1).
+        assert_eq!(
+            row.get("x"),
+            Some(&json!(2)),
+            "last-write-wins on duplicate column name"
+        );
+    }
+
+    #[test]
+    fn run_query_param_count_mismatch_returns_err_not_panic() {
+        // Bug class: panic-on-bad-input crossing the FFI boundary. `run_query`
+        // is called from `duckdb__query` which is wrapped in `catch_unwind`,
+        // but a panic here would still corrupt the cached `Connection` via
+        // `Mutex` poisoning (`parking_lot::Mutex` does NOT poison, but a
+        // panic still leaves `with_conn`'s held lock dropped mid-operation —
+        // depending on duckdb-rs internal invariants the underlying
+        // `duckdb::Connection` state could be partially mutated). We want a
+        // clean `Result::Err` propagation: caller passes too many params for
+        // the SQL's placeholder count → DuckDB errors out, `?` propagates,
+        // FFI layer ships `{"error": "..."}`. A future refactor that
+        // `.unwrap()`s mid-pipeline would convert this to a panic and break
+        // the contract for every stryke caller.
+        let mut conn = Connection::open_in_memory().unwrap();
+        // 0 placeholders, 2 params supplied.
+        let result = run_query(&mut conn, "SELECT 1", &[json!(99), json!("extra")]);
+        assert!(
+            result.is_err(),
+            "param-count mismatch must surface as Err, not Ok/panic; got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn run_query_ddl_returns_empty_columns_without_panicking_on_expect() {
+        // Bug class: `run_query` line 219 has `rows.as_ref().expect(...)`
+        // — a panic site. `expect` documents the duckdb-rs contract
+        // "Statement is alive while Rows lives" but a DDL/no-result query
+        // is the corner case most likely to trip future API drift. If
+        // someone upgrades the duckdb crate and `rows.as_ref()` starts
+        // returning `None` for statements that produced no rowset, the
+        // `expect` panics across the FFI boundary; `catch_unwind` turns it
+        // into a generic `"stryke-duckdb handler panicked"` error losing
+        // the original SQL context.
+        //
+        // This test pins the working contract: a CREATE TABLE through the
+        // query path completes without panicking. Failure of this test
+        // means duckdb-rs broke the `rows.as_ref()` invariant and the
+        // `expect` must be replaced with a `Result::Err` mapping BEFORE
+        // bumping the crate — surfacing this as a bug-review checkpoint
+        // rather than a crash in production. We assert structural shape,
+        // not exact column count, because duckdb's DDL surfaces an
+        // affected-rows column whose presence is a crate-internal detail
+        // that may change across point releases — what matters is no
+        // panic crossing the FFI boundary.
+        let mut conn = Connection::open_in_memory().unwrap();
+        let result = run_query(&mut conn, "CREATE TABLE t_dummy (n INTEGER)", &[]);
+        let out = result.expect("DDL through query path must not panic or err");
+        assert!(
+            out.get("columns").and_then(|c| c.as_array()).is_some(),
+            "result shape: columns array always present"
+        );
+        assert!(
+            out.get("rows").and_then(|r| r.as_array()).is_some(),
+            "result shape: rows array always present"
+        );
+    }
+
+    #[test]
     fn value_to_tosql_u64_above_i64_max_loses_precision_round_trip() {
         // Bug class: silent integer precision loss on parameter binding.
         // JSON allows arbitrary-precision integers; `value_to_tosql` tries
@@ -691,7 +822,9 @@ mod tests {
         let v = bind_and_read_back(&json!(u64::MAX));
         // The lossy path lands in DuckDB as a Double; `value_ref_to_json`
         // turns it back into a JSON number. The exact value is NOT u64::MAX.
-        let f = v.as_f64().expect("u64::MAX is bound as a Double, not preserved as an integer");
+        let f = v
+            .as_f64()
+            .expect("u64::MAX is bound as a Double, not preserved as an integer");
         assert!(
             (f - u64::MAX as f64).abs() < 1.0e4,
             "round-trip should land near u64::MAX as a float, got {}",
@@ -703,5 +836,36 @@ mod tests {
             "if this assertion fires, value_to_tosql now preserves u64 precision — \
              review the fix and update this test to assert exact equality"
         );
+    }
+
+    /// `validate_identifier` must reject SQL-injection payloads.
+    /// Pre-fix, `duckdb__import` interpolated `table` raw into the
+    /// `CREATE OR REPLACE TABLE {table} AS SELECT * FROM ...` SQL,
+    /// letting a `table` param of `users; DROP TABLE users` execute
+    /// both statements via `execute_batch`.
+    #[test]
+    fn validate_identifier_rejects_semicolon_drop_payload() {
+        assert!(validate_identifier("users; DROP TABLE users", "table").is_err());
+        assert!(validate_identifier("users -- c", "table").is_err());
+        assert!(validate_identifier("\"users\"", "table").is_err());
+        assert!(validate_identifier("users'", "table").is_err());
+        assert!(validate_identifier("", "table").is_err());
+        assert!(
+            validate_identifier("1users", "table").is_err(),
+            "identifier must start with letter or `_`, not digit"
+        );
+    }
+
+    /// Schema-qualified names must work — DuckDB supports `schema.table`
+    /// and `database.schema.table`. A blanket `.` reject would break the
+    /// documented import-into-non-default-schema use case.
+    #[test]
+    fn validate_identifier_accepts_schema_qualified_name() {
+        assert!(validate_identifier("analytics.events", "table").is_ok());
+        assert!(validate_identifier("_private.t1", "table").is_ok());
+        assert!(validate_identifier("a.b.c", "table").is_ok());
+        assert!(validate_identifier(".x", "table").is_err());
+        assert!(validate_identifier("x.", "table").is_err());
+        assert!(validate_identifier("a..b", "table").is_err());
     }
 }
