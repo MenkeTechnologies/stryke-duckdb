@@ -1,0 +1,44 @@
+#!/usr/bin/env stryke
+# examples/discover.stk — minimum-viable tour of the `DuckDB` package.
+#
+# Self-contained: opens an in-memory db, creates one table, exercises
+# query / query_one / query_stream + inspect. No file argument, no
+# service. Runs end-to-end in CI in <100ms.
+#
+# Run:   s examples/discover.stk
+
+use DuckDB
+
+p "=== DuckDB discover ==="
+val $info = DuckDB::inspect()
+p "version:  " . ($info->{version} // "?")
+p ""
+
+# Seed an in-memory table.
+DuckDB::query("CREATE TABLE t (id INT, name VARCHAR, score DOUBLE)")
+DuckDB::query("INSERT INTO t VALUES (1, 'alice', 1.5), (2, 'bob', 2.0), (3, 'charlie', 3.25)")
+
+# query — full result set as rows.
+var @rows = DuckDB::query("SELECT * FROM t ORDER BY id")
+p "query        -> " . scalar(@rows) . " rows"
+for val $r (@rows) {
+    p "  $r->{id}: $r->{name} = $r->{score}"
+}
+
+# query_one — first row only.
+val $one = DuckDB::query_one("SELECT name FROM t WHERE id = 2")
+p "query_one    -> " . ($one->{name} // "?")
+
+# Aggregation through query.
+val $agg = DuckDB::query_one("SELECT COUNT(*) AS n, AVG(score) AS avg FROM t")
+p "aggregate    -> n=$agg->{n}, avg=$agg->{avg}"
+
+# query_stream — iterator-style consumption.
+mysync $count = 0
+DuckDB::query_stream("SELECT * FROM t", callback => sub ($r) {
+    $count++
+})
+p "stream count -> $count"
+
+p ""
+p "(in-memory db disposed at process exit)"
