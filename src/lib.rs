@@ -626,4 +626,82 @@ mod tests {
         let v = bind_and_read_back(&json!({"a": 1}));
         assert_eq!(v.as_str().unwrap(), r#"{"a":1}"#);
     }
+
+    // ── hand-crafted bug-class catchers ──
+
+    #[test]
+    fn value_ref_double_non_finite_collapses_to_null_silently() {
+        // Bug class: silent data loss for non-finite floats. `json!(f64)` routes
+        // through `serde_json::Number::from_f64`, which returns `None` for NaN /
+        // ±Inf, and the `json!` macro substitutes `Value::Null`. That makes a
+        // DuckDB row containing `0.0/0.0` indistinguishable from SQL NULL on
+        // the stryke side. This test pins the current contract so any future
+        // refactor (e.g. emitting "NaN" / "Infinity" string sentinels, or
+        // panicking) is a deliberate, reviewable change — not a silent drift.
+        assert_eq!(value_ref_to_json(ValueRef::Double(f64::NAN)), Value::Null);
+        assert_eq!(
+            value_ref_to_json(ValueRef::Double(f64::INFINITY)),
+            Value::Null
+        );
+        assert_eq!(
+            value_ref_to_json(ValueRef::Double(f64::NEG_INFINITY)),
+            Value::Null
+        );
+        assert_eq!(value_ref_to_json(ValueRef::Float(f32::NAN)), Value::Null);
+        assert_eq!(
+            value_ref_to_json(ValueRef::Float(f32::INFINITY)),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn key_from_opts_empty_string_path_is_not_memory_singleton() {
+        // Bug class: missing-key vs empty-string semantic mismatch. The
+        // `.unwrap_or(":memory:")` fallback fires ONLY when "path" is absent
+        // or non-string — an empty `""` is a valid `&str` and falls through
+        // verbatim. That means callers passing `{"path": ""}` (a common
+        // foot-gun for code that builds opts from CLI args) get a DbKey with
+        // an empty path, NOT the `:memory:` singleton. Pinning this guards
+        // against (a) a future "helpful" coercion that silently changes the
+        // cache key for existing callers, and (b) the inverse regression that
+        // makes empty paths accidentally collide with the `:memory:` slot.
+        let k = key_from_opts(&json!({"path": ""}));
+        assert_eq!(k.path, "");
+        assert_ne!(k.path, ":memory:");
+        let mem = key_from_opts(&json!({}));
+        assert_ne!(k, mem);
+    }
+
+    #[test]
+    fn value_to_tosql_u64_above_i64_max_loses_precision_round_trip() {
+        // Bug class: silent integer precision loss on parameter binding.
+        // JSON allows arbitrary-precision integers; `value_to_tosql` tries
+        // `as_i64()` first (fails for any u64 > i64::MAX), then falls through
+        // to `as_f64()` which silently truncates to ~15-17 significant digits.
+        // u64::MAX = 18446744073709551615 round-trips as 1.8446744073709552e19.
+        // This corrupts Discord snowflakes, Twitter IDs, Postgres bigserials
+        // cast to unsigned, and any other > 2^53 identifier the user binds.
+        //
+        // The test pins the *current* lossy behavior so the boss sees an
+        // explicit failure when (and only when) someone fixes it (e.g. by
+        // routing > i64::MAX through `Box::new(n.to_string())` like HugeInt).
+        // If `value_to_tosql` is later changed to round-trip u64::MAX
+        // exactly, this test will fail and the fix can be reviewed
+        // intentionally instead of slipping in silently.
+        let v = bind_and_read_back(&json!(u64::MAX));
+        // The lossy path lands in DuckDB as a Double; `value_ref_to_json`
+        // turns it back into a JSON number. The exact value is NOT u64::MAX.
+        let f = v.as_f64().expect("u64::MAX is bound as a Double, not preserved as an integer");
+        assert!(
+            (f - u64::MAX as f64).abs() < 1.0e4,
+            "round-trip should land near u64::MAX as a float, got {}",
+            f
+        );
+        assert_ne!(
+            v,
+            json!(u64::MAX),
+            "if this assertion fires, value_to_tosql now preserves u64 precision — \
+             review the fix and update this test to assert exact equality"
+        );
+    }
 }
