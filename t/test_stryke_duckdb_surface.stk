@@ -1,0 +1,36 @@
+## t/test_stryke_duckdb_surface.stk — wrapper-completeness pin.
+##
+## Asserts every public `fn X::Y::name` declared in lib/*.stk is
+## reachable via `use` at runtime. Uses `exists &X::Y::name` to
+## probe the symbol table without invoking the sub.
+##
+## Catches:
+##   * a wrapper sub deleted from lib/ but still referenced elsewhere
+##   * a sub-package file dropped from the install layout
+##   * `use Foo::Bar` failing to chase into lib/Bar.stk
+##   * an installed-package entry whose namespace bridge is broken
+##
+## Permission-free — no service, no creds, no live daemon. Private
+## helpers (`_` prefix) are implementation detail and are NOT
+## asserted, so refactoring internals stays free.
+
+use DuckDB
+
+# ── DuckDB.stk ──────────────────────────────────────────────
+assert_ok exists &DuckDB::version, "DuckDB::version exists"
+assert_ok exists &DuckDB::ping, "DuckDB::ping exists"
+assert_ok exists &DuckDB::inspect, "DuckDB::inspect exists"
+assert_ok exists &DuckDB::query, "DuckDB::query exists"
+assert_ok exists &DuckDB::query_stream, "DuckDB::query_stream exists"
+assert_ok exists &DuckDB::query_one, "DuckDB::query_one exists"
+assert_ok exists &DuckDB::query_col, "DuckDB::query_col exists"
+assert_ok exists &DuckDB::query_scalar, "DuckDB::query_scalar exists"
+assert_ok exists &DuckDB::dump, "DuckDB::dump exists"
+assert_ok exists &DuckDB::execute, "DuckDB::execute exists"
+assert_ok exists &DuckDB::exec_file, "DuckDB::exec_file exists"
+assert_ok exists &DuckDB::import, "DuckDB::import exists"
+assert_ok exists &DuckDB::export, "DuckDB::export exists"
+assert_ok exists &DuckDB::tables, "DuckDB::tables exists"
+assert_ok exists &DuckDB::schema, "DuckDB::schema exists"
+
+test_run
