@@ -868,4 +868,96 @@ mod tests {
         assert!(validate_identifier("x.", "table").is_err());
         assert!(validate_identifier("a..b", "table").is_err());
     }
+
+    #[test]
+    fn with_conn_cached_connection_ignores_pragmas_on_subsequent_calls() {
+        // Bug class: silent config drop after first connection open. `DbKey`
+        // = (path, session, read_only). `pragmas` is NOT part of the key, and
+        // `open_conn` only runs the `pragmas` array on the freshly-opened
+        // `Connection`. The second `with_conn` call with the same key short-
+        // circuits at `map.get(&key)` and reuses the cached `Connection`
+        // without ever applying the second call's pragmas. Callers that
+        // toggle session config per query (e.g. `SET memory_limit='4GB'`
+        // for a heavy query, default afterwards) will see the setting
+        // silently dropped on every call after the first.
+        //
+        // We use a unique session per test invocation so the global `CONNS`
+        // cache from other tests doesn't poison this one — `:memory:` with
+        // `_default` session is shared across the whole test binary.
+        let session = format!("test-pragma-drop-{}", std::process::id());
+        let opts_a = json!({
+            "session": session,
+            "pragmas": ["SET threads=2"],
+        });
+        let threads_a: i64 = with_conn(&opts_a, |c| {
+            let mut s = c.prepare("SELECT current_setting('threads')")?;
+            let mut r = s.query([])?;
+            let row = r.next()?.expect("one row");
+            Ok(row.get::<_, i64>(0)?)
+        })
+        .expect("first call should apply pragma");
+        assert_eq!(
+            threads_a, 2,
+            "first call applied SET threads=2 (got {threads_a})"
+        );
+
+        // Second call: same session, DIFFERENT pragma. The cached connection
+        // is reused, so the new pragma never runs. The setting stays at the
+        // first call's value, not the second's.
+        let opts_b = json!({
+            "session": session,
+            "pragmas": ["SET threads=7"],
+        });
+        let threads_b: i64 = with_conn(&opts_b, |c| {
+            let mut s = c.prepare("SELECT current_setting('threads')")?;
+            let mut r = s.query([])?;
+            let row = r.next()?.expect("one row");
+            Ok(row.get::<_, i64>(0)?)
+        })
+        .expect("second call should not error");
+        assert_eq!(
+            threads_b, 2,
+            "second call's pragma (SET threads=7) was silently dropped; setting stayed at first call's value (2)"
+        );
+        assert_ne!(
+            threads_b, 7,
+            "if this fires, pragmas on cached connections are now re-applied — review and update test"
+        );
+    }
+
+    #[test]
+    fn key_from_opts_non_bool_read_only_silently_defaults_to_false() {
+        // Bug class: type-coercion footgun crossing the JSON FFI boundary.
+        // stryke callers building opts from string-typed CLI args / env vars
+        // commonly pass `{"read_only": "true"}` (string, not bool) expecting
+        // the value to be respected. `Value::as_bool()` returns `None` for
+        // any non-bool JSON node, and `.unwrap_or(false)` then silently
+        // routes the connection into READ-WRITE mode. Worse: the resulting
+        // `DbKey` collides with the read-write cache slot, so a later call
+        // with `{"read_only": false}` reuses the same handle — there's no
+        // way to recover to a true read-only handle without changing the
+        // session.
+        //
+        // Pinning the current (silently-permissive) behavior so the boss
+        // sees an explicit failure if and only if someone fixes it (e.g.
+        // by erroring on non-bool, or by accepting "true"/"1"/"yes").
+        let k_string_true = key_from_opts(&json!({"read_only": "true"}));
+        assert!(
+            !k_string_true.read_only,
+            "string 'true' silently coerces to false (bug); should either error or coerce to true"
+        );
+        let k_int_one = key_from_opts(&json!({"read_only": 1}));
+        assert!(!k_int_one.read_only, "integer 1 silently coerces to false");
+        let k_null = key_from_opts(&json!({"read_only": null}));
+        assert!(!k_null.read_only, "JSON null silently coerces to false");
+        // Sanity: same path + different `read_only` interpretation collide
+        // on the same cache slot when the user meant read-only but typed
+        // the string form.
+        let k_meant_ro = key_from_opts(&json!({"path": "/tmp/coll.db", "read_only": "true"}));
+        let k_actually_rw = key_from_opts(&json!({"path": "/tmp/coll.db", "read_only": false}));
+        assert_eq!(
+            k_meant_ro, k_actually_rw,
+            "string-true read_only collides with rw cache key — caller cannot tell their request was downgraded"
+        );
+    }
 }
