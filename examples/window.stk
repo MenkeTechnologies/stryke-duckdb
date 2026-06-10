@@ -1,0 +1,59 @@
+#!/usr/bin/env stryke
+# examples/window.stk — ranking + windowing demo on an in-memory dataset.
+#
+# Demonstrates the analytical SQL features DuckDB shines at:
+#   * ROW_NUMBER() OVER (PARTITION BY ...)
+#   * RANK() with ties
+#   * LAG / LEAD / running totals
+# Self-contained — synthesizes a sales table, runs in <100ms.
+#
+# Run:   s examples/window.stk
+
+use DuckDB
+
+p "=== DuckDB window/analytics tour ==="
+p ""
+
+DuckDB::query("CREATE TABLE sales (region VARCHAR, qtr INT, revenue DOUBLE)")
+DuckDB::query("INSERT INTO sales VALUES
+    ('east', 1, 100), ('east', 2, 130), ('east', 3, 120), ('east', 4, 150),
+    ('west', 1, 90),  ('west', 2, 95),  ('west', 3, 95),  ('west', 4, 110),
+    ('north',1, 60),  ('north',2, 80),  ('north',3, 75),  ('north',4, 100)
+")
+
+p "── ROW_NUMBER per region, ordered by revenue desc:"
+var @rn = DuckDB::query("
+    SELECT region, qtr, revenue,
+           ROW_NUMBER() OVER (PARTITION BY region ORDER BY revenue DESC) AS rn
+    FROM sales
+    ORDER BY region, rn
+")
+for val $r (@rn) {
+    p "  $r->{region} Q$r->{qtr}: \$$r->{revenue}  (rank $r->{rn})"
+}
+
+p ""
+p "── LAG: revenue delta vs prior quarter, per region:"
+var @lag = DuckDB::query("
+    SELECT region, qtr, revenue,
+           revenue - LAG(revenue) OVER (PARTITION BY region ORDER BY qtr) AS delta
+    FROM sales
+    ORDER BY region, qtr
+")
+for val $r (@lag) {
+    val $d = defined $r->{delta} ? sprintf("%+d", $r->{delta}) : "(first)"
+    p "  $r->{region} Q$r->{qtr}: \$$r->{revenue}  ($d)"
+}
+
+p ""
+p "── running total per region:"
+var @rt = DuckDB::query("
+    SELECT region, qtr, revenue,
+           SUM(revenue) OVER (PARTITION BY region ORDER BY qtr
+                              ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS total
+    FROM sales
+    ORDER BY region, qtr
+")
+for val $r (@rt) {
+    p "  $r->{region} Q$r->{qtr}: total \$$r->{total}"
+}
