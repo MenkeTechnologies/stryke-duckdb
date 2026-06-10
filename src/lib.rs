@@ -74,6 +74,15 @@ fn open_conn(key: &DbKey, opts: &Value) -> Result<Connection> {
     } else {
         Connection::open(&key.path)?
     };
+    apply_conn_opts(&conn, opts)?;
+    Ok(conn)
+}
+
+/// Apply pragmas + extensions to a (possibly cached) connection. Extracted so
+/// `with_conn` can call it on cache hits too — pre-fix the cache reused a
+/// connection without re-running pragmas/extensions, so calls with different
+/// opts silently shared the FIRST opts state.
+fn apply_conn_opts(conn: &Connection, opts: &Value) -> Result<()> {
     // Optional `pragmas`: list of `SET name=value;` strings to run on connect.
     if let Some(arr) = opts.get("pragmas").and_then(|v| v.as_array()) {
         for p in arr {
@@ -82,15 +91,26 @@ fn open_conn(key: &DbKey, opts: &Value) -> Result<Connection> {
             }
         }
     }
-    // Optional `extensions`: list of names to INSTALL + LOAD.
+    // Optional `extensions`: list of names to INSTALL + LOAD. Names are
+    // whitelisted to ASCII letters/digits/underscore so a caller can't smuggle
+    // arbitrary SQL like `httpfs; ATTACH '/etc/passwd' AS p` via the name slot.
+    // Pre-fix the name was raw-interpolated, enabling extension injection.
     if let Some(arr) = opts.get("extensions").and_then(|v| v.as_array()) {
         for ext in arr {
             if let Some(name) = ext.as_str() {
+                let valid_ext_name =
+                    !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+                if !valid_ext_name {
+                    bail!(
+                        "extension name `{name}` contains invalid characters \
+                         (must be ASCII alphanumeric / underscore)"
+                    );
+                }
                 conn.execute_batch(&format!("INSTALL {0}; LOAD {0};", name))?;
             }
         }
     }
-    Ok(conn)
+    Ok(())
 }
 
 fn with_conn<F, R>(opts: &Value, f: F) -> Result<R>
@@ -110,6 +130,11 @@ where
         }
     };
     let mut conn = handle.lock();
+    // Re-apply pragmas/extensions on cache hits so opts from the CURRENT call
+    // take effect. DbKey is (path, session, read_only) only — pragmas and
+    // extensions are NOT part of the cache key, so a second call with
+    // different pragmas previously silently ignored them.
+    apply_conn_opts(&conn, opts)?;
     f(&mut conn)
 }
 
@@ -870,58 +895,40 @@ mod tests {
     }
 
     #[test]
-    fn with_conn_cached_connection_ignores_pragmas_on_subsequent_calls() {
-        // Bug class: silent config drop after first connection open. `DbKey`
-        // = (path, session, read_only). `pragmas` is NOT part of the key, and
-        // `open_conn` only runs the `pragmas` array on the freshly-opened
-        // `Connection`. The second `with_conn` call with the same key short-
-        // circuits at `map.get(&key)` and reuses the cached `Connection`
-        // without ever applying the second call's pragmas. Callers that
-        // toggle session config per query (e.g. `SET memory_limit='4GB'`
-        // for a heavy query, default afterwards) will see the setting
-        // silently dropped on every call after the first.
+    fn with_conn_cached_connection_reapplies_pragmas_on_subsequent_calls() {
+        // FIXED: pragmas are now re-applied on every `with_conn` call, including
+        // cache hits. Pre-fix the cached connection was reused without running
+        // the new call's pragmas — callers that toggled session config per
+        // query saw the setting silently dropped on every call after the first.
         //
-        // We use a unique session per test invocation so the global `CONNS`
-        // cache from other tests doesn't poison this one — `:memory:` with
-        // `_default` session is shared across the whole test binary.
+        // Unique session per test invocation so the global CONNS cache from
+        // other tests doesn't poison this one.
         let session = format!("test-pragma-drop-{}", std::process::id());
-        let opts_a = json!({
-            "session": session,
-            "pragmas": ["SET threads=2"],
-        });
-        let threads_a: i64 = with_conn(&opts_a, |c| {
-            let mut s = c.prepare("SELECT current_setting('threads')")?;
-            let mut r = s.query([])?;
-            let row = r.next()?.expect("one row");
-            Ok(row.get::<_, i64>(0)?)
-        })
-        .expect("first call should apply pragma");
-        assert_eq!(
-            threads_a, 2,
-            "first call applied SET threads=2 (got {threads_a})"
-        );
+        let threads_a: i64 = with_conn(
+            &json!({"session": session, "pragmas": ["SET threads=2"]}),
+            |c| {
+                let mut s = c.prepare("SELECT current_setting('threads')")?;
+                let mut r = s.query([])?;
+                let row = r.next()?.expect("one row");
+                Ok(row.get::<_, i64>(0)?)
+            },
+        )
+        .expect("first call applies pragma");
+        assert_eq!(threads_a, 2);
 
-        // Second call: same session, DIFFERENT pragma. The cached connection
-        // is reused, so the new pragma never runs. The setting stays at the
-        // first call's value, not the second's.
-        let opts_b = json!({
-            "session": session,
-            "pragmas": ["SET threads=7"],
-        });
-        let threads_b: i64 = with_conn(&opts_b, |c| {
-            let mut s = c.prepare("SELECT current_setting('threads')")?;
-            let mut r = s.query([])?;
-            let row = r.next()?.expect("one row");
-            Ok(row.get::<_, i64>(0)?)
-        })
-        .expect("second call should not error");
+        let threads_b: i64 = with_conn(
+            &json!({"session": session, "pragmas": ["SET threads=7"]}),
+            |c| {
+                let mut s = c.prepare("SELECT current_setting('threads')")?;
+                let mut r = s.query([])?;
+                let row = r.next()?.expect("one row");
+                Ok(row.get::<_, i64>(0)?)
+            },
+        )
+        .expect("second call applies pragma on cached connection");
         assert_eq!(
-            threads_b, 2,
-            "second call's pragma (SET threads=7) was silently dropped; setting stayed at first call's value (2)"
-        );
-        assert_ne!(
             threads_b, 7,
-            "if this fires, pragmas on cached connections are now re-applied — review and update test"
+            "second call's pragma must take effect on cached connection (got {threads_b})"
         );
     }
 
@@ -959,5 +966,33 @@ mod tests {
             k_meant_ro, k_actually_rw,
             "string-true read_only collides with rw cache key — caller cannot tell their request was downgraded"
         );
+    }
+
+    /// `apply_conn_opts` must reject extension names containing SQL-meaningful
+    /// characters. Pre-fix, `INSTALL {name}; LOAD {name};` was format!-built
+    /// from the raw caller string, so a name like `httpfs; ATTACH '/etc/passwd' AS p`
+    /// executed three statements via `execute_batch`. Whitelist is ASCII
+    /// alphanumeric + underscore — covers every real DuckDB extension name.
+    #[test]
+    fn apply_conn_opts_rejects_extension_injection_payloads() {
+        let conn = Connection::open_in_memory().expect("memdb");
+        let err1 = apply_conn_opts(
+            &conn,
+            &json!({"extensions": ["httpfs; ATTACH '/etc/passwd' AS p"]}),
+        )
+        .expect_err("semicolon in name must hard-fail");
+        assert!(err1.to_string().contains("invalid characters"));
+
+        let err2 = apply_conn_opts(&conn, &json!({"extensions": ["foo bar"]}))
+            .expect_err("space in name must hard-fail");
+        assert!(err2.to_string().contains("invalid characters"));
+
+        let err3 = apply_conn_opts(&conn, &json!({"extensions": ["--comment"]}))
+            .expect_err("comment-leader in name must hard-fail");
+        assert!(err3.to_string().contains("invalid characters"));
+
+        // Empty array / missing field is a no-op.
+        assert!(apply_conn_opts(&conn, &json!({"extensions": []})).is_ok());
+        assert!(apply_conn_opts(&conn, &json!({})).is_ok());
     }
 }
