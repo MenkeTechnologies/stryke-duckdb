@@ -364,10 +364,16 @@ pub extern "C" fn duckdb__exec(args: *const c_char) -> *const c_char {
 #[no_mangle]
 pub extern "C" fn duckdb__dump(args: *const c_char) -> *const c_char {
     ffi_call(args, |v| {
-        let source = v["source"]
-            .as_str()
-            .ok_or_else(|| anyhow!("missing source"))?
-            .to_string();
+        // Validate the FROM-clause identifier exactly as import/export do —
+        // `source` is interpolated raw into `SELECT * FROM {source}`, so an
+        // unvalidated value is the same injection surface validate_identifier
+        // closes for the other two ops.
+        let source = validate_identifier(
+            v["source"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing source"))?,
+            "source",
+        )?;
         let limit = v["limit"].as_i64();
         let sql = match limit {
             Some(n) => format!("SELECT * FROM {} LIMIT {}", source, n),
