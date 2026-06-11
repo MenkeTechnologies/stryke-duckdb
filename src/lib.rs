@@ -995,4 +995,114 @@ mod tests {
         assert!(apply_conn_opts(&conn, &json!({"extensions": []})).is_ok());
         assert!(apply_conn_opts(&conn, &json!({})).is_ok());
     }
+
+    #[test]
+    fn value_ref_temporal_types_emit_lossy_raw_encodings() {
+        // Bug class: silent semantic loss on temporal columns. The DuckDB
+        // DATE / TIME / TIMESTAMP types do NOT round-trip as ISO strings —
+        // `value_ref_to_json` emits the raw arrow backing representation:
+        //   * Date32  -> a bare i32 day-count since 1970-01-01 (line 204).
+        //     `19723` is 2024-01-01, but on the stryke side it is
+        //     indistinguishable from the plain integer 19723. A caller that
+        //     does `row["d"] + 1` gets 19724, not "the next day", and a
+        //     consumer rendering the field has no signal it is a date.
+        //   * Time64 / Timestamp -> a `{"unit": "<TimeUnit Debug>", "value": n}`
+        //     object whose `unit` string is the *Rust enum Debug spelling*
+        //     ("Microsecond"), not a SQL keyword. Any downstream parser that
+        //     matches on the unit name is coupled to that exact casing.
+        //
+        // Pinning the current contract so a future change to ISO-string
+        // emission (or a TimeUnit Debug rename in the duckdb crate) becomes a
+        // reviewable, deliberate break instead of silent data drift.
+        assert_eq!(value_ref_to_json(ValueRef::Date32(19723)), json!(19723));
+        assert_eq!(
+            value_ref_to_json(ValueRef::Date32(i32::MIN)),
+            json!(i32::MIN),
+            "negative (pre-epoch) day counts pass through unclamped"
+        );
+        assert_eq!(
+            value_ref_to_json(ValueRef::Time64(
+                duckdb::types::TimeUnit::Microsecond,
+                86_399_000_000
+            )),
+            json!({"unit": "Microsecond", "value": 86_399_000_000_i64})
+        );
+        assert_eq!(
+            value_ref_to_json(ValueRef::Timestamp(duckdb::types::TimeUnit::Nanosecond, -1)),
+            json!({"unit": "Nanosecond", "value": -1_i64}),
+            "the value field is signed; pre-epoch timestamps stay negative, not wrapped to u64"
+        );
+    }
+
+    #[test]
+    fn value_ref_unknown_variant_stringifies_rather_than_nulling() {
+        // Bug class: a catch-all match arm silently swallowing a real value as
+        // NULL. `value_ref_to_json` ends in `other => Value::String(format!(
+        // "{:?}", other))` (line 207). The dangerous alternative refactor is
+        // `other => Value::Null`, which would make every Interval / List /
+        // Struct / Map column read back as SQL NULL on the stryke side —
+        // total silent data loss with no error. This pins that the fallback
+        // produces a NON-null, NON-empty string so such a regression fails
+        // loudly. Interval is a stable representative of the `other` arm.
+        let v = value_ref_to_json(ValueRef::Interval {
+            months: 14,
+            days: 3,
+            nanos: 500,
+        });
+        let s = v
+            .as_str()
+            .expect("unknown variant must stringify, not become Null");
+        assert!(
+            !s.is_empty(),
+            "fallback string must carry the value, not be empty"
+        );
+        assert_ne!(
+            v,
+            Value::Null,
+            "the catch-all arm must never collapse to NULL"
+        );
+        // The Debug rendering must actually reflect the value, not a constant
+        // placeholder — a regression to `format!("{}", "?")` would also be
+        // non-null and non-empty but lose all data. Anchor on a field value.
+        assert!(
+            s.contains("14"),
+            "stringified Interval must include its month count, got {s:?}"
+        );
+    }
+
+    #[test]
+    fn validate_identifier_dollar_sign_position_asymmetry() {
+        // Bug class: position-dependent character-class off-by-one. The
+        // validator's two predicates differ by exactly the `$` character:
+        //   valid_start: ascii_alphabetic | '_'        (line 424)
+        //   valid_rest : ascii_alphanumeric | '_' | '$' (line 425)
+        // So `$` is legal in the REST of a segment but illegal as its FIRST
+        // char — matching DuckDB's own identifier grammar. A refactor that
+        // accidentally unifies the two predicates (a tempting "simplification")
+        // would either start accepting `$leading` (lets a generated-column
+        // name like `$1` through) or stop accepting the valid `col$ext` form.
+        // Pin both sides of the asymmetry plus a digit-in-rest sanity check.
+        assert!(
+            validate_identifier("col$ext", "table").is_ok(),
+            "`$` is valid in rest position"
+        );
+        assert!(
+            validate_identifier("_a$b$c", "table").is_ok(),
+            "multiple `$` in rest position are valid"
+        );
+        assert!(
+            validate_identifier("$leading", "table").is_err(),
+            "`$` must be rejected as the first char of a segment"
+        );
+        // Schema-qualified: `$` is rest-only per segment, so a segment that
+        // *starts* with `$` must fail even when an earlier segment is valid.
+        assert!(
+            validate_identifier("good.$bad", "table").is_err(),
+            "per-segment start rule applies after the dot too"
+        );
+        assert!(
+            validate_identifier("a1$.b2$", "table").is_ok(),
+            "digit and `$` both valid in rest of each segment"
+        );
+    }
 }
