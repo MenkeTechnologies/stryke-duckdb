@@ -235,7 +235,7 @@ Wire shape (cdylib responses):
 
 ```sh
 cargo test                   # compiles, no live calls
-s test t/                    # 9 self-contained tests
+s test t/                    # self-contained assertion tests
 ```
 
 Self-contained — no external service required. Tests cover in-memory
@@ -287,13 +287,16 @@ stryke-duckdb/
   lib/
     DuckDB.stk                     # `use DuckDB` — thin wrapper around the FFI symbols
   t/
-    test_duckdb.stk                # 9-test self-contained round-trip
+    test_duckdb.stk                # self-contained assertion round-trip
+    test_stryke_duckdb_surface.stk # wrapper-completeness pin
   examples/
-    query_parquet.stk
     aggregate_csv.stk
+    discover.stk
     parquet_to_db.stk
+    query_parquet.stk
+    window.stk
   .github/workflows/
-    ci.yml                         # cargo + 9-test round-trip
+    ci.yml                         # cargo check/test/clippy + docs lint
     release.yml                    # cross-compile + GH release on tag push
 ```
 
