@@ -193,24 +193,40 @@ fn DuckDB::schema ($table, %opts) {
 
 # ── transactions ────────────────────────────────────────────────────
 #
-# Statements issued with the same %opts run on the same cached handle,
-# so BEGIN / your statements / COMMIT ride on that affinity — no new FFI.
+# Statements issued with the same connection params run on the same cached
+# handle, so BEGIN / your statements / COMMIT ride on that affinity — no
+# new FFI.
+#
+# Every internal call forwards the connection params as EXPLICIT inline
+# pairs via `_conn` rather than splatting %opts: stryke drops a splatted
+# hash variable's keys when the callee is a store-loaded package fn
+# (BUG-306), which would silently route to the default in-memory handle.
+
+## Connection params from $opts (a hashref) as a flat inline list, ready
+## to splice straight into a call's argument list — never `%`-splatted.
+fn DuckDB::_conn ($opts) {
+    var @c
+    for val $k (qw(session read_only pragmas extensions)) {
+        push @c, $k, $opts->{$k} if defined $opts->{$k}
+    }
+    @c
+}
 
 ## Open a transaction (BEGIN TRANSACTION) on the handle for %opts.
 fn DuckDB::begin (%opts) {
-    DuckDB::execute("BEGIN TRANSACTION", %opts)
+    DuckDB::execute("BEGIN TRANSACTION", DuckDB::_conn(\%opts))
     1
 }
 
 ## Commit the open transaction on the handle for %opts.
 fn DuckDB::commit (%opts) {
-    DuckDB::execute("COMMIT", %opts)
+    DuckDB::execute("COMMIT", DuckDB::_conn(\%opts))
     1
 }
 
 ## Roll back the open transaction on the handle for %opts.
 fn DuckDB::rollback (%opts) {
-    DuckDB::execute("ROLLBACK", %opts)
+    DuckDB::execute("ROLLBACK", DuckDB::_conn(\%opts))
     1
 }
 
@@ -218,13 +234,13 @@ fn DuckDB::rollback (%opts) {
 ## ROLLBACK and re-raise. Returns $code's result.
 fn DuckDB::transaction ($code, %opts) {
     die "DuckDB::transaction: first arg must be a coderef" unless ref($code) eq "CODE"
-    DuckDB::begin(%opts)
+    DuckDB::begin(DuckDB::_conn(\%opts))
     val $r = eval { $code->() }
     if ($@) {
-        eval { DuckDB::rollback(%opts) }
+        eval { DuckDB::rollback(DuckDB::_conn(\%opts)) }
         die $@
     }
-    DuckDB::commit(%opts)
+    DuckDB::commit(DuckDB::_conn(\%opts))
     $r
 }
 
@@ -236,7 +252,7 @@ fn DuckDB::count ($table, $where = undef, %opts) {
     val $sql = defined($where) && length($where)
         ? "SELECT count(*) AS n FROM $table WHERE $where"
         : "SELECT count(*) AS n FROM $table"
-    DuckDB::query_scalar($sql, %opts) + 0
+    DuckDB::query_scalar($sql, DuckDB::_conn(\%opts)) + 0
 }
 
 ## True if a table named $name exists. $name must be a plain identifier
@@ -248,12 +264,12 @@ fn DuckDB::table_exists ($name, %opts) {
     }
     DuckDB::query_scalar(
         "SELECT count(*) FROM information_schema.tables WHERE table_name = '$name'",
-        %opts) > 0 ? 1 : 0
+        DuckDB::_conn(\%opts)) > 0 ? 1 : 0
 }
 
 ## Empty $table via DELETE FROM (portable across DuckDB versions). The
 ## table name is interpolated — pass only trusted/validated names.
 fn DuckDB::truncate ($table, %opts) {
-    DuckDB::execute("DELETE FROM $table", %opts)
+    DuckDB::execute("DELETE FROM $table", DuckDB::_conn(\%opts))
     1
 }
