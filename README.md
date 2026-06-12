@@ -197,6 +197,24 @@ DuckDB::exec_file $path, %opts → { ok: true }
 DuckDB::import    $path, $table, %opts → { table, kind, source, num_rows }
 DuckDB::export    $table, $path, %opts → { table, kind, path, file_size }
 DuckDB::truncate  $table, %opts → 1                 # DELETE FROM (empties the table)
+DuckDB::upsert    $table, $row_href, %opts → $affected | @rows   # INSERT … ON CONFLICT DO UPDATE
+```
+
+`upsert` inserts a single row and, on a unique/PK conflict over the
+`conflict` columns, updates the `update` columns from the proposed row
+(DuckDB `excluded.*`). The conflict-target columns must carry a UNIQUE or
+PRIMARY KEY constraint. Options: `conflict => \@cols` (required); `update
+=> \@cols` (defaults to every row column that isn't a conflict target —
+an empty list is `DO NOTHING`); `returning => "col,…" | "*"` for the
+affected rows instead of a count. Names are identifier-validated; values
+are bound.
+
+```stryke
+DuckDB::upsert "kv", { id => 1, name => "a", hits => 1 }, conflict => ["id"]
+DuckDB::upsert "kv", { id => 1, name => "x", hits => 9 },
+               conflict => ["id"], update => ["hits"]   # only bump hits
+my @r = DuckDB::upsert "kv", { id => 2, name => "b" },
+                       conflict => ["id"], returning => "*"
 ```
 
 `import` opts: `kind` (`parquet|csv|json|auto`), `replace`, plus connection.

@@ -52,6 +52,29 @@ val @tlist = DuckDB::tables(db => $tmpdb)
 val $found = grep { $_->{name} eq "t" } @tlist
 assert_ok $found, "tables: contains 't'"
 
+# ── upsert: insert, update-on-conflict, DO NOTHING, RETURNING ───────
+val $us = "stryke_duckdb_upsert_$$"
+DuckDB::execute("CREATE TABLE kv (id INT PRIMARY KEY, name TEXT, hits INT)", session => $us)
+assert_eq DuckDB::upsert("kv", { id => 1, name => "a", hits => 1 },
+    conflict => ["id"], session => $us), 1, "upsert: insert path affected=1"
+DuckDB::upsert("kv", { id => 1, name => "A", hits => 9 }, conflict => ["id"], session => $us)
+val $ur = DuckDB::query_one("SELECT name, hits FROM kv WHERE id = 1", session => $us)
+assert_eq $ur->{name}, "A", "upsert: default update overwrote name"
+assert_eq $ur->{hits}, 9, "upsert: default update overwrote hits"
+DuckDB::upsert("kv", { id => 1, name => "ignored", hits => 42 },
+    conflict => ["id"], update => ["hits"], session => $us)
+val $ur2 = DuckDB::query_one("SELECT name, hits FROM kv WHERE id = 1", session => $us)
+assert_eq $ur2->{name}, "A", "upsert: explicit update kept name"
+assert_eq $ur2->{hits}, 42, "upsert: explicit update bumped hits"
+DuckDB::upsert("kv", { id => 1, name => "nope", hits => 0 },
+    conflict => ["id"], update => [], session => $us)
+assert_eq DuckDB::query_scalar("SELECT hits FROM kv WHERE id = 1", session => $us), 42,
+    "upsert: DO NOTHING left the row unchanged"
+val @uret = DuckDB::upsert("kv", { id => 2, name => "b", hits => 5 },
+    conflict => ["id"], returning => "id,name", session => $us)
+assert_eq scalar(@uret), 1, "upsert RETURNING: 1 row back"
+assert_eq $uret[0]->{name}, "b", "upsert RETURNING: row payload"
+
 # cleanup
 unlink $tmpdb if -e $tmpdb
 unlink "$tmpdb.wal" if -e "$tmpdb.wal"
