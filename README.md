@@ -196,18 +196,33 @@ DuckDB::execute   $sql, %opts → { affected_rows }
 DuckDB::exec_file $path, %opts → { ok: true }
 DuckDB::import    $path, $table, %opts → { table, kind, source, num_rows }
 DuckDB::export    $table, $path, %opts → { table, kind, path, file_size }
+DuckDB::truncate  $table, %opts → 1                 # DELETE FROM (empties the table)
 ```
 
 `import` opts: `kind` (`parquet|csv|json|auto`), `replace`, plus connection.
 `export` opts: `kind` (`parquet|csv|json`), `compression` (parquet only).
 
+### Transactions
+
+Statements issued with the same `%opts` run on the same cached handle,
+so these ride on that affinity (no extra FFI).
+
+```stryke
+DuckDB::begin       %opts → 1                    # BEGIN TRANSACTION
+DuckDB::commit      %opts → 1                    # COMMIT
+DuckDB::rollback    %opts → 1                    # ROLLBACK
+DuckDB::transaction $code, %opts → $code_result  # BEGIN; $code->(); COMMIT — or ROLLBACK + re-raise on die
+```
+
 ### Metadata
 
 ```stryke
-DuckDB::tables   %opts → @{ {name, schema}, … }
-DuckDB::schema   $table, %opts → { table, num_rows, columns: [...] }
-DuckDB::inspect  %opts → { version, file, file_size, databases: [...] }
-DuckDB::ping     %opts → 1 | ""
+DuckDB::tables       %opts → @{ {name, schema}, … }
+DuckDB::schema       $table, %opts → { table, num_rows, columns: [...] }
+DuckDB::inspect      %opts → { version, file, file_size, databases: [...] }
+DuckDB::ping         %opts → 1 | ""
+DuckDB::count        $table, $where?, %opts → $row_count   # SELECT count(*) [WHERE $where]
+DuckDB::table_exists $name, %opts → 1 | 0                  # $name must be a plain identifier
 ```
 
 ## [0x05] FFI layer

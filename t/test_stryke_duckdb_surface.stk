@@ -32,5 +32,12 @@ assert_ok exists &DuckDB::import, "DuckDB::import exists"
 assert_ok exists &DuckDB::export, "DuckDB::export exists"
 assert_ok exists &DuckDB::tables, "DuckDB::tables exists"
 assert_ok exists &DuckDB::schema, "DuckDB::schema exists"
+assert_ok exists &DuckDB::begin, "DuckDB::begin exists"
+assert_ok exists &DuckDB::commit, "DuckDB::commit exists"
+assert_ok exists &DuckDB::rollback, "DuckDB::rollback exists"
+assert_ok exists &DuckDB::transaction, "DuckDB::transaction exists"
+assert_ok exists &DuckDB::count, "DuckDB::count exists"
+assert_ok exists &DuckDB::table_exists, "DuckDB::table_exists exists"
+assert_ok exists &DuckDB::truncate, "DuckDB::truncate exists"
 
 test_run
