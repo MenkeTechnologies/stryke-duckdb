@@ -1,0 +1,49 @@
+#!/usr/bin/env stryke
+# examples/crud.stk — the CRUD convenience surface of the `DuckDB` package.
+#
+# Self-contained: opens an in-memory db and walks insert_many -> exists ->
+# count -> upsert -> update -> delete, the higher-level helpers that wrap
+# raw SQL. No file argument, no service. Runs end-to-end in CI in <100ms.
+#
+# Run:   s examples/crud.stk
+
+use DuckDB
+
+p "=== DuckDB CRUD tour ==="
+
+DuckDB::execute("CREATE TABLE users (id INT PRIMARY KEY, name TEXT, hits INT)")
+
+# insert_many — bulk insert an arrayref of hashrefs in one statement.
+val $n = DuckDB::insert_many("users",
+    [{ id => 1, name => "alice", hits => 1 },
+     { id => 2, name => "bob",   hits => 2 },
+     { id => 3, name => "carol", hits => 3 }])
+p "insert_many  -> $n rows"
+
+# exists — short-circuiting row check (cheaper than count(*) > 0).
+p "exists any   -> " . DuckDB::exists("users")
+p "exists id=2  -> " . DuckDB::exists("users", "id = 2")
+p "exists id=9  -> " . DuckDB::exists("users", "id = 9")
+
+# count — with and without a WHERE clause.
+p "count all    -> " . DuckDB::count("users")
+p "count hits>1 -> " . DuckDB::count("users", "hits > 1")
+
+# upsert — insert, or on a key conflict update the named columns.
+DuckDB::upsert("users", { id => 4, name => "dave", hits => 1 }, conflict => ["id"])
+DuckDB::upsert("users", { id => 4, name => "dave", hits => 9 },
+              conflict => ["id"], update => ["hits"])
+val $dave = DuckDB::query_one("SELECT name, hits FROM users WHERE id = 4")
+p "upsert id=4  -> $dave->{name} hits=$dave->{hits}"
+
+# update — bound SET values, interpolated WHERE; returns the affected count.
+val $u = DuckDB::update("users", { hits => 0 }, "name = 'alice'")
+p "update alice -> $u row(s), hits now " .
+    DuckDB::query_scalar("SELECT hits FROM users WHERE id = 1")
+
+# delete — conditional removal; returns the affected count.
+val $d = DuckDB::delete("users", "hits = 0")
+p "delete hits0 -> $d row(s), " . DuckDB::count("users") . " remaining"
+
+p ""
+p "(in-memory db disposed at process exit)"
