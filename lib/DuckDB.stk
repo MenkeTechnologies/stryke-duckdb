@@ -58,6 +58,12 @@ fn DuckDB::inspect (%opts) {
     DuckDB::_decode("inspect", duckdb__inspect(to_json($r)))
 }
 
+## The embedded DuckDB engine version, reported live via `SELECT version()`
+## (e.g. "v1.5.3"). Distinct from `version`, which is the package version.
+fn DuckDB::server_version (%opts) {
+    DuckDB::query_scalar("SELECT version()", DuckDB::_conn(\%opts))
+}
+
 # ── read paths ──────────────────────────────────────────────────────
 
 ## Run a SELECT and return rows as hashrefs.
@@ -156,6 +162,29 @@ fn DuckDB::exec_file ($path, %opts) {
     DuckDB::_decode("exec", duckdb__exec(to_json($r)))
 }
 
+## Bulk INSERT $rows (arrayref of hashrefs) into $table in a single
+## multi-row INSERT. Columns are inferred from the first row's keys (sorted)
+## and every row is read in that key order — so all rows must share the same
+## columns. The table and column names are identifier-validated; values are
+## bound. Mirrors Postgres/MySQL `insert_many`; returns the inserted count.
+fn DuckDB::insert_many ($table, $rows, %opts) {
+    die "DuckDB::insert_many: rows must be arrayref of hashrefs" unless ref($rows) eq "ARRAY"
+    return 0 unless @$rows
+    DuckDB::_ident($table, "table")
+    val @cols = sort keys %{ $rows->[0] }
+    die "DuckDB::insert_many: first row must have at least one column" unless @cols
+    DuckDB::_ident($_, "column") for @cols
+
+    val $row_ph = "(" . join(", ", map { "?" } @cols) . ")"
+    val $sql = "INSERT INTO $table (" . join(", ", @cols) . ") VALUES "
+                . join(", ", map { $row_ph } @$rows)
+    var @bind
+    for val $r (@$rows) {
+        push @bind, $r->{$_} for @cols
+    }
+    DuckDB::execute($sql, bind => \@bind, DuckDB::_conn(\%opts))->{affected}
+}
+
 ## Import a parquet/csv/json file as a table.
 ## %opts: kind (parquet|csv|json|auto), plus connection.
 fn DuckDB::import ($path, $table, %opts) {
@@ -182,6 +211,14 @@ fn DuckDB::tables (%opts) {
     val $r = DuckDB::_req({}, \%opts)
     val $o = DuckDB::_decode("tables", duckdb__tables(to_json($r)))
     map { { name => $_ } } @{ $o->{tables} }
+}
+
+## List the attached database names (the in-memory `memory` db plus any
+## ATTACH'd files, and the `system`/`temp` catalogs). Mirrors
+## Postgres/MySQL `databases`.
+fn DuckDB::databases (%opts) {
+    DuckDB::query_col("SELECT database_name FROM duckdb_databases() ORDER BY database_name",
+        DuckDB::_conn(\%opts))
 }
 
 ## DESCRIBE TABLE $table — returns column list.

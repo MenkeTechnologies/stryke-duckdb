@@ -192,12 +192,24 @@ DuckDB::dump          $source, %opts → @rows           # source = table | path
 ### DDL / DML
 
 ```stryke
-DuckDB::execute   $sql, %opts → { affected_rows }
-DuckDB::exec_file $path, %opts → { ok: true }
-DuckDB::import    $path, $table, %opts → { table, kind, source, num_rows }
-DuckDB::export    $table, $path, %opts → { table, kind, path, file_size }
-DuckDB::truncate  $table, %opts → 1                 # DELETE FROM (empties the table)
-DuckDB::upsert    $table, $row_href, %opts → $affected | @rows   # INSERT … ON CONFLICT DO UPDATE
+DuckDB::execute     $sql, %opts → { affected }
+DuckDB::exec_file   $path, %opts → { ok: true }
+DuckDB::insert_many $table, $rows_aref, %opts → $inserted_count   # single multi-row INSERT
+DuckDB::import      $path, $table, %opts → { table, kind, source, num_rows }
+DuckDB::export      $table, $path, %opts → { table, kind, path, file_size }
+DuckDB::truncate    $table, %opts → 1                 # DELETE FROM (empties the table)
+DuckDB::upsert      $table, $row_href, %opts → $affected | @rows   # INSERT … ON CONFLICT DO UPDATE
+```
+
+`insert_many` bulk-inserts an arrayref of hashrefs in one multi-row
+INSERT. Columns are inferred from the first row's keys (sorted); every
+row must share them. Table and column names are identifier-validated;
+values are bound. Returns the inserted-row count.
+
+```stryke
+DuckDB::insert_many "events",
+    [{ id => 1, kind => "click" },
+     { id => 2, kind => "view"  }]
 ```
 
 `upsert` inserts a single row and, on a unique/PK conflict over the
@@ -235,12 +247,14 @@ DuckDB::transaction $code, %opts → $code_result  # BEGIN; $code->(); COMMIT �
 ### Metadata
 
 ```stryke
-DuckDB::tables       %opts → @{ {name, schema}, … }
-DuckDB::schema       $table, %opts → { table, num_rows, columns: [...] }
-DuckDB::inspect      %opts → { version, file, file_size, databases: [...] }
-DuckDB::ping         %opts → 1 | ""
-DuckDB::count        $table, $where?, %opts → $row_count   # SELECT count(*) [WHERE $where]
-DuckDB::table_exists $name, %opts → 1 | 0                  # $name must be a plain identifier
+DuckDB::tables         %opts → @{ {name, schema}, … }
+DuckDB::databases      %opts → @names              # attached + system/temp catalogs
+DuckDB::schema         $table, %opts → { table, num_rows, columns: [...] }
+DuckDB::inspect        %opts → { version, file, file_size, databases: [...] }
+DuckDB::server_version %opts → $version_string     # live SELECT version() (e.g. "v1.5.3")
+DuckDB::ping           %opts → 1 | ""
+DuckDB::count          $table, $where?, %opts → $row_count   # SELECT count(*) [WHERE $where]
+DuckDB::table_exists   $name, %opts → 1 | 0                  # $name must be a plain identifier
 ```
 
 ## [0x05] FFI layer

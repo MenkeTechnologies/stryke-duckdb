@@ -52,6 +52,22 @@ val @tlist = DuckDB::tables(db => $tmpdb)
 val $found = grep { $_->{name} eq "t" } @tlist
 assert_ok $found, "tables: contains 't'"
 
+# ── insert_many + server_version + databases ────────────────────────
+val $bs = "stryke_duckdb_bulk_$$"
+DuckDB::execute("CREATE TABLE bulk (id INT, name TEXT, score DOUBLE)", session => $bs)
+assert_eq DuckDB::insert_many("bulk",
+    [{ id => 1, name => "a", score => 1.5 },
+     { id => 2, name => "b", score => 2.5 },
+     { id => 3, name => "c", score => 3.5 }], session => $bs), 3,
+    "insert_many: bulk-inserted 3 rows"
+assert_eq DuckDB::count("bulk", undef, session => $bs), 3, "insert_many: count reflects inserts"
+assert_eq DuckDB::query_scalar("SELECT name FROM bulk WHERE id = 2", session => $bs), "b",
+    "insert_many: column order preserved"
+assert_eq DuckDB::insert_many("bulk", [], session => $bs), 0, "insert_many: empty rows is a no-op"
+assert_ok DuckDB::server_version(session => $bs) =~ /^v?\d+\./, "server_version: looks like a version"
+val @dbs = DuckDB::databases(session => $bs)
+assert_ok scalar(grep { $_ eq "memory" } @dbs), "databases: includes the memory catalog"
+
 # ── upsert: insert, update-on-conflict, DO NOTHING, RETURNING ───────
 val $us = "stryke_duckdb_upsert_$$"
 DuckDB::execute("CREATE TABLE kv (id INT PRIMARY KEY, name TEXT, hits INT)", session => $us)
