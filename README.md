@@ -197,8 +197,21 @@ DuckDB::exec_file   $path, %opts → { ok: true }
 DuckDB::insert_many $table, $rows_aref, %opts → $inserted_count   # single multi-row INSERT
 DuckDB::import      $path, $table, %opts → { table, kind, source, num_rows }
 DuckDB::export      $table, $path, %opts → { table, kind, path, file_size }
+DuckDB::update      $table, $set_href, $where?, %opts → $affected   # UPDATE … SET … [WHERE]
+DuckDB::delete      $table, $where?, %opts → $affected               # DELETE FROM … [WHERE]
 DuckDB::truncate    $table, %opts → 1                 # DELETE FROM (empties the table)
 DuckDB::upsert      $table, $row_href, %opts → $affected | @rows   # INSERT … ON CONFLICT DO UPDATE
+```
+
+`update` and `delete` complete the CRUD surface. `update` binds the `$set`
+values (`SET col = ?, …`) and interpolates `$where`; `delete` interpolates
+`$where`. Both omit `$where` to affect every row and return the
+affected-row count. Table and SET column names are identifier-validated;
+pass trusted values in `$where`.
+
+```stryke
+DuckDB::update "events", { processed => 1 }, "id = 7"
+DuckDB::delete "events", "ts < '2026-01-01'"
 ```
 
 `insert_many` bulk-inserts an arrayref of hashrefs in one multi-row

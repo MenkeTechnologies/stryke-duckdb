@@ -71,6 +71,21 @@ assert_ok DuckDB::server_version(session => $bs) =~ /^v?\d+\./, "server_version:
 val @dbs = DuckDB::databases(session => $bs)
 assert_ok scalar(grep { $_ eq "memory" } @dbs), "databases: includes the memory catalog"
 
+# ── update + delete (bound SET, interpolated WHERE) — destructive, so
+# this runs last on `bulk` after every read above ──────────────────
+assert_eq DuckDB::update("bulk", { name => "B", score => 9.0 }, "id = 2", session => $bs), 1,
+    "update: one matching row affected"
+val $du = DuckDB::query_one("SELECT name, score FROM bulk WHERE id = 2", session => $bs)
+assert_eq $du->{name}, "B", "update: SET applied to name"
+assert_eq DuckDB::update("bulk", { score => 0.0 }, undef, session => $bs), 3,
+    "update: no WHERE touches every row"
+assert_eq DuckDB::query_scalar("SELECT sum(score) FROM bulk", session => $bs), 0,
+    "update: all scores zeroed"
+assert_eq DuckDB::delete("bulk", "id = 1", session => $bs), 1, "delete: one matching row"
+assert_eq DuckDB::count("bulk", undef, session => $bs), 2, "delete: count reflects removal"
+assert_eq DuckDB::delete("bulk", undef, session => $bs), 2, "delete: no WHERE removes the rest"
+assert_eq DuckDB::count("bulk", undef, session => $bs), 0, "delete: table now empty"
+
 # ── upsert: insert, update-on-conflict, DO NOTHING, RETURNING ───────
 val $us = "stryke_duckdb_upsert_$$"
 DuckDB::execute("CREATE TABLE kv (id INT PRIMARY KEY, name TEXT, hits INT)", session => $us)

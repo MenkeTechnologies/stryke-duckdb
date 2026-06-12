@@ -320,6 +320,33 @@ fn DuckDB::truncate ($table, %opts) {
     1
 }
 
+## UPDATE $table, setting the columns in the $set hashref, optionally
+## filtered by $where (omit $where to update every row). SET values are
+## bound; $where is interpolated — pass trusted values there (for a
+## parameterized condition use `execute` directly). Table and SET column
+## names are identifier-validated. Returns the affected-row count.
+fn DuckDB::update ($table, $set, $where = undef, %opts) {
+    die "DuckDB::update: set must be a hashref" unless ref($set) eq "HASH"
+    DuckDB::_ident($table, "table")
+    val @cols = sort keys %$set
+    die "DuckDB::update: set must name at least one column" unless @cols
+    DuckDB::_ident($_, "column") for @cols
+    val @assign = map { "$_ = ?" } @cols
+    val $cond = defined($where) && length($where) ? " WHERE $where" : ""
+    val $sql = "UPDATE $table SET " . join(", ", @assign) . $cond
+    val @bind = map { $set->{$_} } @cols
+    DuckDB::execute($sql, DuckDB::_conn(\%opts), bind => \@bind)->{affected}
+}
+
+## DELETE FROM $table, optionally filtered by $where (omit $where to delete
+## every row). $where is interpolated — pass only trusted/validated values.
+## Returns the affected-row count.
+fn DuckDB::delete ($table, $where = undef, %opts) {
+    DuckDB::_ident($table, "table")
+    val $cond = defined($where) && length($where) ? " WHERE $where" : ""
+    DuckDB::execute("DELETE FROM $table$cond", DuckDB::_conn(\%opts))->{affected}
+}
+
 ## Validate $name as a plain SQL identifier ([A-Za-z_][A-Za-z0-9_]*); die
 ## otherwise. Used where upsert interpolates names straight into SQL.
 fn DuckDB::_ident ($name, $what = "identifier") {
