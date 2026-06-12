@@ -304,6 +304,15 @@ fn DuckDB::table_exists ($name, %opts) {
         DuckDB::_conn(\%opts)) > 0 ? 1 : 0
 }
 
+## True if at least one row in $table matches $where (or any row exists
+## when $where is omitted). Uses SQL EXISTS, which short-circuits at the
+## first match — cheaper than count(*) > 0 on a large table. The table name
+## and $where are interpolated; pass only trusted/validated values.
+fn DuckDB::exists ($table, $where = undef, %opts) {
+    val $cond = defined($where) && length($where) ? " WHERE $where" : ""
+    DuckDB::query_scalar("SELECT EXISTS(SELECT 1 FROM $table$cond) AS e", DuckDB::_conn(\%opts)) ? 1 : 0
+}
+
 ## Empty $table via DELETE FROM (portable across DuckDB versions). The
 ## table name is interpolated — pass only trusted/validated names.
 fn DuckDB::truncate ($table, %opts) {

@@ -41,6 +41,7 @@ assert_ok exists &DuckDB::rollback, "DuckDB::rollback exists"
 assert_ok exists &DuckDB::transaction, "DuckDB::transaction exists"
 assert_ok exists &DuckDB::count, "DuckDB::count exists"
 assert_ok exists &DuckDB::table_exists, "DuckDB::table_exists exists"
+assert_ok exists &DuckDB::exists, "DuckDB::exists exists"
 assert_ok exists &DuckDB::truncate, "DuckDB::truncate exists"
 assert_ok exists &DuckDB::upsert, "DuckDB::upsert exists"
 
