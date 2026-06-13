@@ -22,6 +22,8 @@ exports = [
     "duckdb__export",
     "duckdb__tables",
     "duckdb__schema",
+    "duckdb__appender",
+    "duckdb__explain",
 ]
 
 [scripts]

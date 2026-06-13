@@ -530,6 +530,69 @@ pub extern "C" fn duckdb__schema(args: *const c_char) -> *const c_char {
     })
 }
 
+/// Bulk-load rows into a table via DuckDB's native `Appender` — its fastest
+/// ingest path (no SQL parse per row). `rows` is an array of arrays, each a
+/// full row in column order. Returns the appended row count.
+#[no_mangle]
+pub extern "C" fn duckdb__appender(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let table = validate_identifier(
+            v["table"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing table"))?,
+            "table",
+        )?;
+        let rows = v["rows"]
+            .as_array()
+            .ok_or_else(|| anyhow!("missing rows (array of column-ordered arrays)"))?
+            .clone();
+        with_conn(&v, |c| {
+            let mut app = c.appender(&table)?;
+            let mut n = 0i64;
+            for row in &rows {
+                let cells = row
+                    .as_array()
+                    .ok_or_else(|| anyhow!("each row must be an array of column values"))?;
+                let boxed: Vec<Box<dyn duckdb::ToSql>> = cells.iter().map(value_to_tosql).collect();
+                let refs: Vec<&dyn duckdb::ToSql> = boxed.iter().map(|b| b.as_ref()).collect();
+                app.append_row(duckdb::appender_params_from_iter(refs))?;
+                n += 1;
+            }
+            app.flush()?;
+            Ok(json!({"table": table, "appended": n}))
+        })
+    })
+}
+
+/// Return the query plan for `sql`. `analyze => true` runs `EXPLAIN ANALYZE`
+/// (executes the query and reports real timings). The plan is collected from
+/// DuckDB's `explain_value` column into one text blob.
+#[no_mangle]
+pub extern "C" fn duckdb__explain(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let sql = v["sql"].as_str().ok_or_else(|| anyhow!("missing sql"))?;
+        let keyword = if v["analyze"].as_bool().unwrap_or(false) {
+            "EXPLAIN ANALYZE "
+        } else {
+            "EXPLAIN "
+        };
+        let explain_sql = format!("{keyword}{sql}");
+        with_conn(&v, |c| {
+            let mut stmt = c.prepare(&explain_sql)?;
+            let mut rows = stmt.query([])?;
+            let mut lines = Vec::new();
+            // EXPLAIN yields (explain_key, explain_value) rows; the plan text
+            // is the second column.
+            while let Some(row) = rows.next()? {
+                if let Ok(val) = row.get::<_, String>(1) {
+                    lines.push(val);
+                }
+            }
+            Ok(json!({"plan": lines.join("\n")}))
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1110,5 +1173,65 @@ mod tests {
             validate_identifier("a1$.b2$", "table").is_ok(),
             "digit and `$` both valid in rest of each segment"
         );
+    }
+
+    // ── appender + explain functional round-trip (embedded DuckDB) ───────────
+
+    /// Drive a `duckdb__*` export the way stryke's bridge does and reclaim the
+    /// returned CString.
+    fn call_export(f: extern "C" fn(*const c_char) -> *const c_char, arg: &Value) -> Value {
+        let cs = CString::new(arg.to_string()).unwrap();
+        let raw = f(cs.as_ptr());
+        assert!(!raw.is_null());
+        let out = unsafe { CStr::from_ptr(raw) }.to_str().unwrap().to_string();
+        unsafe { stryke_free_cstring(raw as *mut c_char) };
+        serde_json::from_str(&out).unwrap()
+    }
+
+    /// The native Appender must bulk-load every row, and EXPLAIN must return a
+    /// non-empty plan — exercised end to end against an isolated in-memory DB.
+    #[test]
+    fn appender_bulk_loads_and_explain_returns_plan() {
+        let sess = json!({"path": ":memory:", "session": "test-appender-roundtrip"});
+        with_conn(&sess, |c| {
+            c.execute_batch("CREATE OR REPLACE TABLE t(id INTEGER, name VARCHAR)")?;
+            Ok(())
+        })
+        .unwrap();
+
+        let mut arg = sess.clone();
+        arg["table"] = json!("t");
+        arg["rows"] = json!([[1, "a"], [2, "b"], [3, "c"]]);
+        let r = call_export(duckdb__appender, &arg);
+        assert_eq!(r["appended"], 3, "appender must report 3 rows; got {r}");
+
+        let n = with_conn(&sess, |c| {
+            let mut s = c.prepare("SELECT count(*) FROM t")?;
+            let mut rows = s.query([])?;
+            Ok(rows.next()?.unwrap().get::<_, i64>(0)?)
+        })
+        .unwrap();
+        assert_eq!(n, 3, "all appended rows must be visible");
+
+        let mut earg = sess.clone();
+        earg["sql"] = json!("SELECT * FROM t WHERE id > 1");
+        let e = call_export(duckdb__explain, &earg);
+        assert!(
+            e["plan"].as_str().is_some_and(|p| !p.is_empty()),
+            "EXPLAIN must return a non-empty plan; got {e}"
+        );
+    }
+
+    /// Appender must reject a non-array `rows` and an injection-shaped table
+    /// before touching the connection.
+    #[test]
+    fn appender_validates_args() {
+        let v = call_export(duckdb__appender, &json!({"table": "t"}));
+        assert!(v["error"].as_str().unwrap().contains("missing rows"));
+        let v = call_export(
+            duckdb__appender,
+            &json!({"table": "t; DROP TABLE t", "rows": []}),
+        );
+        assert!(v["error"].is_string(), "injection table must error");
     }
 }

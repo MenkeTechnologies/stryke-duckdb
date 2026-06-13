@@ -185,6 +185,22 @@ fn DuckDB::insert_many ($table, $rows, %opts) {
     DuckDB::execute($sql, bind => \@bind, DuckDB::_conn(\%opts))->{affected}
 }
 
+## Bulk-load $rows into $table via DuckDB's native Appender — its fastest
+## ingest path. $rows is an arrayref of arrayrefs, each a full row in column
+## order. Returns the appended row count.
+fn DuckDB::appender ($table, $rows, %opts) {
+    die "DuckDB::appender: rows must be arrayref of arrayrefs" unless ref($rows) eq "ARRAY"
+    val $r = DuckDB::_req({ table => $table, rows => $rows }, \%opts)
+    DuckDB::_decode("appender", duckdb__appender(to_json($r)))->{appended}
+}
+
+## Return the query plan for $sql. %opts: analyze => 1 for EXPLAIN ANALYZE
+## (executes the query, reports real timings). Returns the plan text.
+fn DuckDB::explain ($sql, %opts) {
+    val $r = DuckDB::_req({ sql => $sql, analyze => ($opts{analyze} ? \1 : \0) }, \%opts)
+    DuckDB::_decode("explain", duckdb__explain(to_json($r)))->{plan}
+}
+
 ## Import a parquet/csv/json file as a table.
 ## %opts: kind (parquet|csv|json|auto), plus connection.
 fn DuckDB::import ($path, $table, %opts) {

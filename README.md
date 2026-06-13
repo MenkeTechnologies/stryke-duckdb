@@ -194,13 +194,24 @@ DuckDB::dump          $source, %opts → @rows           # source = table | path
 ```stryke
 DuckDB::execute     $sql, %opts → { affected }
 DuckDB::exec_file   $path, %opts → { ok: true }
+DuckDB::explain     $sql, %opts → $plan_text          # opts: analyze => 1 for EXPLAIN ANALYZE
 DuckDB::insert_many $table, $rows_aref, %opts → $inserted_count   # single multi-row INSERT
+DuckDB::appender    $table, $rows_aref, %opts → $appended_count   # native Appender — fastest bulk load
 DuckDB::import      $path, $table, %opts → { table, kind, source, num_rows }
 DuckDB::export      $table, $path, %opts → { table, kind, path, file_size }
 DuckDB::update      $table, $set_href, $where?, %opts → $affected   # UPDATE … SET … [WHERE]
 DuckDB::delete      $table, $where?, %opts → $affected               # DELETE FROM … [WHERE]
 DuckDB::truncate    $table, %opts → 1                 # DELETE FROM (empties the table)
 DuckDB::upsert      $table, $row_href, %opts → $affected | @rows   # INSERT … ON CONFLICT DO UPDATE
+```
+
+`appender` is DuckDB's native bulk-ingest path — no SQL parse per row — and is
+the fastest way to load a large dataset. Unlike `insert_many` (which takes
+hashrefs and infers columns), `appender` takes an arrayref of **arrayrefs**,
+each a full row in table column order:
+
+```stryke
+DuckDB::appender "events", [[1, "click"], [2, "view"], [3, "scroll"]]
 ```
 
 `update` and `delete` complete the CRUD surface. `update` binds the `$set`
