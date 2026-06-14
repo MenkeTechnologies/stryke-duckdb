@@ -49,4 +49,10 @@ assert_ok exists &DuckDB::delete, "DuckDB::delete exists"
 assert_ok exists &DuckDB::truncate, "DuckDB::truncate exists"
 assert_ok exists &DuckDB::upsert, "DuckDB::upsert exists"
 
+# ── DuckDB.stk catalog introspection ──
+assert_ok exists &DuckDB::views, "DuckDB::views exists"
+assert_ok exists &DuckDB::functions, "DuckDB::functions exists"
+assert_ok exists &DuckDB::settings, "DuckDB::settings exists"
+assert_ok exists &DuckDB::extensions, "DuckDB::extensions exists"
+
 test_run

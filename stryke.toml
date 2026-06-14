@@ -24,6 +24,10 @@ exports = [
     "duckdb__schema",
     "duckdb__appender",
     "duckdb__explain",
+    "duckdb__views",
+    "duckdb__functions",
+    "duckdb__settings",
+    "duckdb__extensions",
 ]
 
 [scripts]

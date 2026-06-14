@@ -427,3 +427,25 @@ fn DuckDB::upsert ($table, $row, %opts) {
         DuckDB::execute($sql, bind => \@bind, @fwd)->{affected}
     }
 }
+
+# ── catalog introspection ────────────────────────────────────────────
+
+## List view names in the current schema.
+fn DuckDB::views (%opts) {
+    @{ DuckDB::_decode("views", duckdb__views(to_json(DuckDB::_req({}, \%opts))))->{views} }
+}
+
+## List distinct function names (scalar/aggregate/table/macro).
+fn DuckDB::functions (%opts) {
+    @{ DuckDB::_decode("functions", duckdb__functions(to_json(DuckDB::_req({}, \%opts))))->{functions} }
+}
+
+## List DuckDB settings as { name, value, description } rows.
+fn DuckDB::settings (%opts) {
+    @{ DuckDB::_decode("settings", duckdb__settings(to_json(DuckDB::_req({}, \%opts))))->{rows} }
+}
+
+## List extensions as { extension_name, loaded, installed, description } rows.
+fn DuckDB::extensions (%opts) {
+    @{ DuckDB::_decode("extensions", duckdb__extensions(to_json(DuckDB::_req({}, \%opts))))->{rows} }
+}

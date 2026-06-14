@@ -593,6 +593,68 @@ pub extern "C" fn duckdb__explain(args: *const c_char) -> *const c_char {
     })
 }
 
+#[no_mangle]
+pub extern "C" fn duckdb__views(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        with_conn(&v, |c| {
+            let mut s = c.prepare(
+                "SELECT table_name FROM information_schema.views \
+                 WHERE table_schema = current_schema() ORDER BY table_name",
+            )?;
+            let mut r = s.query([])?;
+            let mut out: Vec<String> = Vec::new();
+            while let Some(row) = r.next()? {
+                out.push(row.get(0)?);
+            }
+            Ok(json!({"views": out}))
+        })
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn duckdb__functions(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        with_conn(&v, |c| {
+            let mut s = c.prepare(
+                "SELECT DISTINCT function_name FROM duckdb_functions() ORDER BY function_name",
+            )?;
+            let mut r = s.query([])?;
+            let mut out: Vec<String> = Vec::new();
+            while let Some(row) = r.next()? {
+                out.push(row.get(0)?);
+            }
+            Ok(json!({"functions": out}))
+        })
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn duckdb__settings(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        with_conn(&v, |c| {
+            run_query(
+                c,
+                "SELECT name, value, description FROM duckdb_settings() ORDER BY name",
+                &[],
+            )
+        })
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn duckdb__extensions(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        with_conn(&v, |c| {
+            run_query(
+                c,
+                "SELECT extension_name, loaded, installed, description \
+                 FROM duckdb_extensions() ORDER BY extension_name",
+                &[],
+            )
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
