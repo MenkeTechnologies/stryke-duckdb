@@ -482,6 +482,52 @@ fn DuckDB::quote_qualified_ident ($name) {
     join(".", map { DuckDB::quote_ident($_) } split(/\./, $name))
 }
 
+## Parse a dotted, possibly-double-quoted qualified identifier into its segments
+## — inverse of quote_qualified_ident. A "."-inside-quotes stays literal and a
+## doubled "" un-doubles to one. Returns an arrayref of segments. Rejects an
+## unquoted empty segment and an unterminated quote.
+fn DuckDB::parse_qualified_ident ($name) {
+    var @parts
+    var @chars    = split //, $name
+    var $cur      = ""
+    var $in_quote = 0
+    var $had      = 0
+    var $i        = 0
+    while ($i <= $#chars) {
+        val $c = $chars[$i]
+        if ($in_quote) {
+            if ($c eq '"' && $i < $#chars && $chars[$i + 1] eq '"') {
+                $cur .= '"'
+                $i  += 2
+            } elsif ($c eq '"') {
+                $in_quote = 0
+                $i++
+            } else {
+                $cur .= $c
+                $i++
+            }
+        } elsif ($c eq '"') {
+            $in_quote = 1
+            $had      = 1
+            $i++
+        } elsif ($c eq '.') {
+            die "DuckDB::parse_qualified_ident: empty segment in `$name`" unless $had
+            push @parts, $cur
+            $cur = ""
+            $had = 0
+            $i++
+        } else {
+            $cur .= $c
+            $had  = 1
+            $i++
+        }
+    }
+    die "DuckDB::parse_qualified_ident: unterminated quote in `$name`" if $in_quote
+    die "DuckDB::parse_qualified_ident: empty segment in `$name`" unless $had
+    push @parts, $cur
+    \@parts
+}
+
 ## Build a DuckDB list literal "['a', 'b', 'c']" from an arrayref of string
 ## elements. Each element is single-quote escaped. DuckDB has first-class LIST
 ## types, so this inlines a list value into SQL (an empty list yields "[]").

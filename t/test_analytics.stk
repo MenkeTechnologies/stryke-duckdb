@@ -86,6 +86,17 @@ assert_eq DuckDB::quote_qualified_ident("t"), "\"t\"",      "quote_qualified_ide
 assert_dies fn { DuckDB::quote_qualified_ident("main.") },  "quote_qualified_ident: rejects empty trailing segment"
 assert_dies fn { DuckDB::quote_qualified_ident("a..b") },   "quote_qualified_ident: rejects doubled dot"
 
+# ── parse_qualified_ident (inverse of quote_qualified_ident) ──
+val $segs = DuckDB::parse_qualified_ident("\"main\".\"my table\"")
+assert_eq scalar(@$segs), 2,      "parse_qualified_ident: two segments"
+assert_eq $segs->[1], "my table", "parse_qualified_ident: quoted segment keeps the space"
+assert_eq DuckDB::parse_qualified_ident("\"a.b\".\"c\"")->[0], "a.b", "parse_qualified_ident: dot inside quotes is literal"
+assert_eq DuckDB::parse_qualified_ident("\"we\"\"ird\"")->[0], "we\"ird", "parse_qualified_ident: doubled quote decodes to one"
+assert_eq DuckDB::parse_qualified_ident("main.users")->[0], "main", "parse_qualified_ident: bare segment passes through"
+assert_eq DuckDB::parse_qualified_ident(DuckDB::quote_qualified_ident("main.my table"))->[1], "my table", "parse_qualified_ident: round-trips quote_qualified_ident"
+assert_dies fn { DuckDB::parse_qualified_ident("a..b") }, "parse_qualified_ident: rejects an empty segment"
+assert_dies fn { DuckDB::parse_qualified_ident("\"unterminated") }, "parse_qualified_ident: rejects an unterminated quote"
+
 # ── format_list (DuckDB list literal) ──
 assert_eq DuckDB::format_list(["a", "b", "c"]), "['a', 'b', 'c']",  "format_list: quoted list literal"
 assert_eq DuckDB::format_list(["o'brien"]),     "['o''brien']",     "format_list: single quotes doubled per element"
