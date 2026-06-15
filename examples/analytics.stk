@@ -1,0 +1,40 @@
+#!/usr/bin/env stryke
+# examples/analytics.stk — DuckDB analytics surface added in v0.4.0.
+#
+# describe / summarize / aggregate / group_count / distinct / read_parquet,
+# all composed over query/execute. Self-contained, in-memory session.
+#
+# Run:    s examples/analytics.stk
+
+use DuckDB
+
+val $s = "analytics_demo_$$"
+
+DuckDB::execute("CREATE TABLE orders (id INT, region TEXT, amount INT)", session => $s)
+DuckDB::insert_many("orders", [
+    { id => 1, region => "east", amount => 120 },
+    { id => 2, region => "east", amount => 80 },
+    { id => 3, region => "west", amount => 300 },
+    { id => 4, region => "west", amount => 220 },
+    { id => 5, region => "north", amount => 50 },
+], session => $s)
+
+p "columns: " . join(", ", DuckDB::columns("orders", session => $s))
+
+p sprintf("rows=%d  sum=%d  avg=%d  min=%d  max=%d",
+    DuckDB::aggregate("orders", "id", "count", undef, session => $s),
+    DuckDB::sum_("orders", "amount", session => $s),
+    DuckDB::avg_("orders", "amount", session => $s),
+    DuckDB::min_("orders", "amount", session => $s),
+    DuckDB::max_("orders", "amount", session => $s))
+
+p "orders per region:"
+for val $g (DuckDB::group_count("orders", "region", session => $s)) {
+    p sprintf("  %-6s %d", $g->{value}, $g->{n})
+}
+
+# Materialize to parquet and read it straight back.
+val $pq = "/tmp/stryke-duckdb-orders-$$.parquet"
+DuckDB::copy_to("SELECT * FROM orders WHERE amount >= 100", $pq, format => "parquet", session => $s)
+p sprintf("big orders in %s: %d", $pq, scalar(DuckDB::read_parquet($pq, session => $s)))
+unlink $pq if -e $pq

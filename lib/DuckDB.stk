@@ -449,3 +449,161 @@ fn DuckDB::settings (%opts) {
 fn DuckDB::extensions (%opts) {
     @{ DuckDB::_decode("extensions", duckdb__extensions(to_json(DuckDB::_req({}, \%opts))))->{rows} }
 }
+
+
+# ── analytics & introspection ─────────────────────────────────────────
+#
+# Pure-SQL helpers composed over query/execute — no new FFI. Identifiers go
+# through DuckDB::_ident (plain-identifier allowlist); file paths through
+# DuckDB::_str_lit (single-quote escaped) so neither can break out of the SQL.
+
+## SQL string literal with single-quotes doubled — safe inlining of paths.
+fn DuckDB::_str_lit ($s) {
+    val $e = $s =~ s/'/''/gr
+    "'$e'"
+}
+
+## DESCRIBE $table → rows of { column_name, column_type, null, key, default, extra }.
+fn DuckDB::describe ($table, %opts) {
+    DuckDB::_ident($table, "table")
+    DuckDB::query("DESCRIBE $table", DuckDB::_conn(\%opts))
+}
+
+## Column names of $table in declared order.
+fn DuckDB::columns ($table, %opts) {
+    map { $_->{column_name} } DuckDB::describe($table, DuckDB::_conn(\%opts))
+}
+
+## { column_name => column_type } map for $table.
+fn DuckDB::column_types ($table, %opts) {
+    var %t
+    for val $r (DuckDB::describe($table, DuckDB::_conn(\%opts))) {
+        $t{$r->{column_name}} = $r->{column_type}
+    }
+    \%t
+}
+
+## SUMMARIZE $table → per-column stats rows (count, min, max, avg, std, …).
+fn DuckDB::summarize ($table, %opts) {
+    DuckDB::_ident($table, "table")
+    DuckDB::query("SUMMARIZE $table", DuckDB::_conn(\%opts))
+}
+
+## First $n rows of $table (default 10).
+fn DuckDB::head ($table, $n = 10, %opts) {
+    DuckDB::_ident($table, "table")
+    DuckDB::query("SELECT * FROM $table", limit => $n + 0, DuckDB::_conn(\%opts))
+}
+
+## Random reservoir sample of $n rows from $table (default 10).
+fn DuckDB::sample ($table, $n = 10, %opts) {
+    DuckDB::_ident($table, "table")
+    val $k = $n + 0
+    DuckDB::query("SELECT * FROM $table USING SAMPLE $k ROWS", DuckDB::_conn(\%opts))
+}
+
+## Distinct values of $column in $table.
+fn DuckDB::distinct ($table, $column, %opts) {
+    DuckDB::_ident($table, "table")
+    DuckDB::_ident($column, "column")
+    DuckDB::query_col("SELECT DISTINCT $column FROM $table", DuckDB::_conn(\%opts))
+}
+
+## Scalar aggregate $fn($column) over $table, optional WHERE.
+## $fn ∈ count|sum|avg|min|max|median|stddev|… (validated as a plain identifier).
+fn DuckDB::aggregate ($table, $column, $fn = "count", $where = undef, %opts) {
+    DuckDB::_ident($table, "table")
+    DuckDB::_ident($column, "column")
+    DuckDB::_ident($fn, "aggregate")
+    val $cond = defined($where) && length($where) ? " WHERE $where" : ""
+    DuckDB::query_scalar("SELECT $fn($column) AS v FROM $table$cond", DuckDB::_conn(\%opts))
+}
+
+## Convenience scalar aggregates over a whole column.
+fn DuckDB::sum_ ($table, $column, %opts) {
+    DuckDB::aggregate($table, $column, "sum", undef, DuckDB::_conn(\%opts))
+}
+
+fn DuckDB::avg_ ($table, $column, %opts) {
+    DuckDB::aggregate($table, $column, "avg", undef, DuckDB::_conn(\%opts))
+}
+
+fn DuckDB::min_ ($table, $column, %opts) {
+    DuckDB::aggregate($table, $column, "min", undef, DuckDB::_conn(\%opts))
+}
+
+fn DuckDB::max_ ($table, $column, %opts) {
+    DuckDB::aggregate($table, $column, "max", undef, DuckDB::_conn(\%opts))
+}
+
+## { value => count } frequency of $column in $table (descending).
+fn DuckDB::group_count ($table, $column, %opts) {
+    DuckDB::_ident($table, "table")
+    DuckDB::_ident($column, "column")
+    DuckDB::query(
+        "SELECT $column AS value, count(*) AS n FROM $table GROUP BY $column ORDER BY n DESC",
+        DuckDB::_conn(\%opts))
+}
+
+## CREATE TABLE $name AS $query (CTAS). Pass replace => 1 for OR REPLACE.
+fn DuckDB::create_table_as ($name, $query, %opts) {
+    DuckDB::_ident($name, "table")
+    val $or = $opts{replace} ? "OR REPLACE " : ""
+    DuckDB::execute("CREATE " . $or . "TABLE $name AS $query", DuckDB::_conn(\%opts))
+}
+
+## Query a parquet file directly via read_parquet(). opts: columns, limit.
+fn DuckDB::read_parquet ($path, %opts) {
+    val $cols = $opts{columns} // "*"
+    val $sql = "SELECT $cols FROM read_parquet(" . DuckDB::_str_lit($path) . ")"
+    defined($opts{limit})
+        ? DuckDB::query($sql, limit => $opts{limit} + 0, DuckDB::_conn(\%opts))
+        : DuckDB::query($sql, DuckDB::_conn(\%opts))
+}
+
+## Query a CSV file directly via read_csv_auto(). opts: columns, limit.
+fn DuckDB::read_csv ($path, %opts) {
+    val $cols = $opts{columns} // "*"
+    val $sql = "SELECT $cols FROM read_csv_auto(" . DuckDB::_str_lit($path) . ")"
+    defined($opts{limit})
+        ? DuckDB::query($sql, limit => $opts{limit} + 0, DuckDB::_conn(\%opts))
+        : DuckDB::query($sql, DuckDB::_conn(\%opts))
+}
+
+## Query a JSON file directly via read_json_auto(). opts: columns, limit.
+fn DuckDB::read_json ($path, %opts) {
+    val $cols = $opts{columns} // "*"
+    val $sql = "SELECT $cols FROM read_json_auto(" . DuckDB::_str_lit($path) . ")"
+    defined($opts{limit})
+        ? DuckDB::query($sql, limit => $opts{limit} + 0, DuckDB::_conn(\%opts))
+        : DuckDB::query($sql, DuckDB::_conn(\%opts))
+}
+
+## COPY an arbitrary $query TO a file. opts: format ∈ parquet|csv|json (default parquet).
+fn DuckDB::copy_to ($query, $path, %opts) {
+    val $fmt = $opts{format} // "parquet"
+    DuckDB::_ident($fmt, "format")
+    DuckDB::execute(
+        "COPY ($query) TO " . DuckDB::_str_lit($path) . " (FORMAT $fmt)",
+        DuckDB::_conn(\%opts))
+}
+
+## INSTALL an extension by name.
+fn DuckDB::install_extension ($name, %opts) {
+    DuckDB::_ident($name, "extension")
+    DuckDB::execute("INSTALL $name", DuckDB::_conn(\%opts))
+    1
+}
+
+## LOAD an extension by name (must be installed).
+fn DuckDB::load_extension ($name, %opts) {
+    DuckDB::_ident($name, "extension")
+    DuckDB::execute("LOAD $name", DuckDB::_conn(\%opts))
+    1
+}
+
+## Run a PRAGMA and return its rows.
+fn DuckDB::pragma ($name, %opts) {
+    DuckDB::_ident($name, "pragma")
+    DuckDB::query("PRAGMA $name", DuckDB::_conn(\%opts))
+}

@@ -290,6 +290,33 @@ DuckDB::table_exists   $name, %opts → 1 | 0                  # $name must be a
 it over `count(…) > 0` when you only need a yes/no. The table name and
 `$where` are interpolated; pass trusted/validated values.
 
+### Analytics
+
+Pure-SQL helpers composed over `query`/`execute` — no new FFI. Identifiers
+(table/column/function names) are validated as plain identifiers; file paths
+are single-quote escaped before inlining. Like the CRUD helpers, these route
+connection options through `_conn`, so target a named `session =>`.
+
+```stryke
+DuckDB::describe        $table, %opts → @{ {column_name, column_type, null, …} }
+DuckDB::columns         $table, %opts → @names
+DuckDB::column_types    $table, %opts → { column_name => column_type }
+DuckDB::summarize       $table, %opts → @{ per-column stats }      # SUMMARIZE
+DuckDB::head            $table, $n=10, %opts → @rows
+DuckDB::sample          $table, $n=10, %opts → @rows               # USING SAMPLE (reservoir)
+DuckDB::distinct        $table, $column, %opts → @values
+DuckDB::aggregate       $table, $column, $fn="count", $where?, %opts → $scalar
+DuckDB::sum_ / avg_ / min_ / max_   $table, $column, %opts → $scalar
+DuckDB::group_count     $table, $column, %opts → @{ {value, n} }   # GROUP BY … ORDER BY n DESC
+DuckDB::create_table_as $name, $query, %opts → result             # CTAS; replace => 1 for OR REPLACE
+DuckDB::read_parquet    $path, %opts → @rows                       # read_parquet();  opts: columns, limit
+DuckDB::read_csv        $path, %opts → @rows                       # read_csv_auto()
+DuckDB::read_json       $path, %opts → @rows                       # read_json_auto()
+DuckDB::copy_to         $query, $path, %opts → result              # COPY (…) TO; opts: format
+DuckDB::install_extension / load_extension   $name, %opts → 1      # INSTALL / LOAD
+DuckDB::pragma          $name, %opts → @rows
+```
+
 ## [0x05] FFI layer
 
 Each `DuckDB::*` wrapper builds a JSON args dict and calls a sibling

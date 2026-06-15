@@ -1,0 +1,84 @@
+## t/test_analytics.stk — assertion tests for the DuckDB analytics surface
+## (v0.4.0): describe/columns/column_types/summarize/head/sample/distinct/
+## aggregate/sum_/avg_/min_/max_/group_count/create_table_as/read_parquet/
+## copy_to/pragma.
+##
+## Uses stryke's native test framework (`assert_*` + `test_run`). Self-
+## contained — DuckDB embeds; no external service beyond the loaded cdylib
+## (install once with `s pkg install -g .`). All helpers route connection
+## opts through DuckDB::_conn, so — like the core CRUD helpers — they target a
+## named `session =>` rather than a file `db =>`.
+
+use DuckDB
+
+val $s = "stryke_duckdb_analytics_$$"
+
+DuckDB::execute("CREATE TABLE sales (id INT, region TEXT, amount INT)", session => $s)
+DuckDB::insert_many("sales", [
+    { id => 1, region => "east", amount => 100 },
+    { id => 2, region => "east", amount => 200 },
+    { id => 3, region => "west", amount => 300 },
+    { id => 4, region => "west", amount => 400 },
+    { id => 5, region => "west", amount => 500 },
+], session => $s)
+
+# ── describe / columns / column_types ────────────────────────────────
+val @desc = DuckDB::describe("sales", session => $s)
+assert_eq scalar(@desc), 3, "describe: 3 columns"
+val @cols = DuckDB::columns("sales", session => $s)
+assert_eq scalar(@cols), 3, "columns: 3 names"
+assert_ok scalar(grep { $_ eq "amount" } @cols), "columns: includes amount"
+val $types = DuckDB::column_types("sales", session => $s)
+assert_match qr/(?i)int/, $types->{id}, "column_types: id is an integer type"
+
+# ── summarize ────────────────────────────────────────────────────────
+val @summary = DuckDB::summarize("sales", session => $s)
+assert_ok scalar(@summary) >= 3, "summarize: at least one stats row per column"
+
+# ── head / sample ────────────────────────────────────────────────────
+assert_eq scalar(DuckDB::head("sales", 2, session => $s)), 2, "head: returns N rows"
+assert_eq scalar(DuckDB::sample("sales", 3, session => $s)), 3, "sample: returns N rows"
+
+# ── distinct ─────────────────────────────────────────────────────────
+val @regions = sort(DuckDB::distinct("sales", "region", session => $s))
+assert_eq scalar(@regions), 2, "distinct region: 2 values"
+assert_eq $regions[0], "east", "distinct region: east present and sorted first"
+
+# ── aggregates ───────────────────────────────────────────────────────
+assert_eq DuckDB::aggregate("sales", "id", "count", undef, session => $s), 5, "aggregate count = 5"
+assert_eq DuckDB::sum_("sales", "amount", session => $s), 1500, "sum_ amount = 1500"
+assert_eq DuckDB::avg_("sales", "amount", session => $s), 300, "avg_ amount = 300"
+assert_eq DuckDB::min_("sales", "amount", session => $s), 100, "min_ amount = 100"
+assert_eq DuckDB::max_("sales", "amount", session => $s), 500, "max_ amount = 500"
+assert_eq DuckDB::aggregate("sales", "id", "count", "region = 'west'", session => $s), 3,
+    "aggregate honors WHERE"
+
+# ── group_count ──────────────────────────────────────────────────────
+val @gc = DuckDB::group_count("sales", "region", session => $s)
+assert_eq $gc[0]->{value}, "west", "group_count: most frequent first"
+assert_eq $gc[0]->{n}, 3, "group_count: west has 3"
+
+# ── create_table_as ──────────────────────────────────────────────────
+DuckDB::create_table_as("big", "SELECT * FROM sales WHERE amount >= 300", session => $s)
+assert_eq DuckDB::count("big", undef, session => $s), 3, "create_table_as: materialized 3 rows"
+
+# ── copy_to parquet → read_parquet round-trip ────────────────────────
+val $pq = "/tmp/stryke-duckdb-analytics-$$.parquet"
+DuckDB::copy_to("SELECT * FROM sales ORDER BY id", $pq, format => "parquet", session => $s)
+assert_ok -e $pq, "copy_to: parquet file created"
+val @back = DuckDB::read_parquet($pq, session => $s)
+assert_eq scalar(@back), 5, "read_parquet: 5 rows round-tripped"
+assert_eq $back[0]->{id}, 1, "read_parquet: row order preserved"
+assert_eq scalar(DuckDB::read_parquet($pq, limit => 2, session => $s)), 2, "read_parquet: limit honored"
+
+# ── pragma ───────────────────────────────────────────────────────────
+val @dbl = DuckDB::pragma("database_list", session => $s)
+assert_ok scalar(@dbl) >= 1, "pragma database_list: returns rows"
+
+# ── _str_lit escapes embedded quotes (injection guard) ───────────────
+assert_eq DuckDB::_str_lit("o'brien"), "'o''brien'", "_str_lit doubles single quotes"
+
+# cleanup
+unlink $pq if -e $pq
+
+test_run

@@ -136,6 +136,10 @@ make install</pre>
             <tr><td>persistent file db</td><td><code>DuckDB::execute "CREATE TABLE users (id INT, name VARCHAR)", db =&gt; "app.duckdb"</code></td></tr>
             <tr><td>bulk load a parquet</td><td><code>DuckDB::import "events.parquet", "events", db =&gt; "app.duckdb", replace =&gt; 1</code></td></tr>
             <tr><td>stream large results</td><td><code>DuckDB::query_stream "SELECT * FROM events", db =&gt; "app.duckdb", callback =&gt; sub ($row) { process $row }</code></td></tr>
+            <tr><td>describe a table's columns</td><td><code>my @cols = DuckDB::describe "sales", session =&gt; $s</code></td></tr>
+            <tr><td>scalar aggregate over a column</td><td><code>my $total = DuckDB::sum_ "sales", "amount", session =&gt; $s</code></td></tr>
+            <tr><td>frequency by group</td><td><code>my @freq = DuckDB::group_count "sales", "region", session =&gt; $s</code></td></tr>
+            <tr><td>query a parquet file directly</td><td><code>my @rows = DuckDB::read_parquet "events.parquet", limit =&gt; 100</code></td></tr>
           </tbody>
         </table>
         <p>The full API lives in the <a href="https://github.com/MenkeTechnologies/stryke-duckdb#0x04-api-reference">README "API reference" section</a>.</p>
