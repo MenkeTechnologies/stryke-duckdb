@@ -59,5 +59,6 @@ assert_ok exists &DuckDB::extensions, "DuckDB::extensions exists"
 assert_ok exists &DuckDB::quote_ident, "DuckDB::quote_ident exists"
 assert_ok exists &DuckDB::quote_qualified_ident, "DuckDB::quote_qualified_ident exists"
 assert_ok exists &DuckDB::format_list, "DuckDB::format_list exists"
+assert_ok exists &DuckDB::format_struct, "DuckDB::format_struct exists"
 
 test_run

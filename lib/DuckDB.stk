@@ -490,6 +490,16 @@ fn DuckDB::format_list ($elements) {
     "[" . join(", ", map { DuckDB::_str_lit($_) } @$elements) . "]"
 }
 
+## Build a DuckDB STRUCT literal "{'a': '1', 'b': '2'}" from a hashref of string
+## fields. Keys are emitted in sorted order for stable output; both keys and
+## values are single-quote escaped. The struct companion to format_list — DuckDB
+## has first-class STRUCT types, so this inlines a struct value into SQL (an
+## empty hashref yields "{}").
+fn DuckDB::format_struct ($fields) {
+    die "DuckDB::format_struct: fields must be a hashref" unless ref($fields) eq "HASH"
+    "{" . join(", ", map { DuckDB::_str_lit($_) . ": " . DuckDB::_str_lit($fields->{$_}) } sort keys %$fields) . "}"
+}
+
 ## DESCRIBE $table → rows of { column_name, column_type, null, key, default, extra }.
 fn DuckDB::describe ($table, %opts) {
     DuckDB::_ident($table, "table")

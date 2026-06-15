@@ -92,6 +92,12 @@ assert_eq DuckDB::format_list(["o'brien"]),     "['o''brien']",     "format_list
 assert_eq DuckDB::format_list([]),              "[]",               "format_list: empty list"
 assert_dies fn { DuckDB::format_list("nope") },                     "format_list: rejects non-arrayref"
 
+# ── format_struct (DuckDB STRUCT literal) ──
+assert_eq DuckDB::format_struct(+{ b => "2", a => "1" }), "{'a': '1', 'b': '2'}", "format_struct: keys sorted, struct literal"
+assert_eq DuckDB::format_struct(+{ name => "o'brien" }),  "{'name': 'o''brien'}", "format_struct: single quotes doubled in values"
+assert_eq DuckDB::format_struct(+{}),                     "{}",                   "format_struct: empty struct"
+assert_dies fn { DuckDB::format_struct(["nope"]) },                               "format_struct: rejects non-hashref"
+
 # cleanup
 unlink $pq if -e $pq
 
