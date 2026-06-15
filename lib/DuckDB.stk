@@ -463,6 +463,25 @@ fn DuckDB::_str_lit ($s) {
     "'$e'"
 }
 
+## Quote a SQL identifier for DuckDB (ANSI double quotes, embedded quotes
+## doubled): "my col" → `"my col"`, `we"ird` → `"we""ird"`. Unlike _ident,
+## which only validates plain identifiers, this safely quotes ANY name —
+## reserved words, spaces, mixed case — for interpolation into SQL.
+fn DuckDB::quote_ident ($name) {
+    val $e = $name =~ s/"/""/gr
+    qq{"$e"}
+}
+
+## Quote a dotted, schema-qualified identifier — each "."-separated segment is
+## quoted independently and rejoined, so "main.my table" → `"main"."my table"`.
+## Empty segments (leading/trailing/doubled dot) are rejected.
+fn DuckDB::quote_qualified_ident ($name) {
+    if ($name =~ /^\.|\.$|\.\./) {
+        die "DuckDB::quote_qualified_ident: empty segment in `$name`"
+    }
+    join(".", map { DuckDB::quote_ident($_) } split(/\./, $name))
+}
+
 ## DESCRIBE $table → rows of { column_name, column_type, null, key, default, extra }.
 fn DuckDB::describe ($table, %opts) {
     DuckDB::_ident($table, "table")

@@ -55,4 +55,8 @@ assert_ok exists &DuckDB::functions, "DuckDB::functions exists"
 assert_ok exists &DuckDB::settings, "DuckDB::settings exists"
 assert_ok exists &DuckDB::extensions, "DuckDB::extensions exists"
 
+# ── pure SQL-quoting helpers ──
+assert_ok exists &DuckDB::quote_ident, "DuckDB::quote_ident exists"
+assert_ok exists &DuckDB::quote_qualified_ident, "DuckDB::quote_qualified_ident exists"
+
 test_run

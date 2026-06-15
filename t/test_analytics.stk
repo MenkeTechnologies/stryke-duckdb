@@ -78,6 +78,14 @@ assert_ok scalar(@dbl) >= 1, "pragma database_list: returns rows"
 # ── _str_lit escapes embedded quotes (injection guard) ───────────────
 assert_eq DuckDB::_str_lit("o'brien"), "'o''brien'", "_str_lit doubles single quotes"
 
+# ── quote_ident / quote_qualified_ident (ANSI double-quote quoting) ──
+assert_eq DuckDB::quote_ident("my col"),  "\"my col\"",     "quote_ident: spaces quoted"
+assert_eq DuckDB::quote_ident("we\"ird"), "\"we\"\"ird\"",  "quote_ident: embedded quote doubled"
+assert_eq DuckDB::quote_qualified_ident("main.my table"), "\"main\".\"my table\"", "quote_qualified_ident: each segment quoted"
+assert_eq DuckDB::quote_qualified_ident("t"), "\"t\"",      "quote_qualified_ident: bare name still quoted"
+assert_dies fn { DuckDB::quote_qualified_ident("main.") },  "quote_qualified_ident: rejects empty trailing segment"
+assert_dies fn { DuckDB::quote_qualified_ident("a..b") },   "quote_qualified_ident: rejects doubled dot"
+
 # cleanup
 unlink $pq if -e $pq
 
