@@ -205,6 +205,7 @@ DuckDB::truncate    $table, %opts → 1                 # DELETE FROM (empties t
 DuckDB::upsert      $table, $row_href, %opts → $affected | @rows   # INSERT … ON CONFLICT DO UPDATE
 DuckDB::quote_ident $name → $quoted               # ANSI double-quote: my col → "my col"
 DuckDB::quote_qualified_ident $name → $quoted     # main.my table → "main"."my table"
+DuckDB::format_list \@elements → $literal         # ["a","b"] → ['a', 'b'] (DuckDB LIST literal)
 ```
 
 `appender` is DuckDB's native bulk-ingest path — no SQL parse per row — and is

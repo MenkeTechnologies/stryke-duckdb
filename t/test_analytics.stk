@@ -86,6 +86,12 @@ assert_eq DuckDB::quote_qualified_ident("t"), "\"t\"",      "quote_qualified_ide
 assert_dies fn { DuckDB::quote_qualified_ident("main.") },  "quote_qualified_ident: rejects empty trailing segment"
 assert_dies fn { DuckDB::quote_qualified_ident("a..b") },   "quote_qualified_ident: rejects doubled dot"
 
+# ── format_list (DuckDB list literal) ──
+assert_eq DuckDB::format_list(["a", "b", "c"]), "['a', 'b', 'c']",  "format_list: quoted list literal"
+assert_eq DuckDB::format_list(["o'brien"]),     "['o''brien']",     "format_list: single quotes doubled per element"
+assert_eq DuckDB::format_list([]),              "[]",               "format_list: empty list"
+assert_dies fn { DuckDB::format_list("nope") },                     "format_list: rejects non-arrayref"
+
 # cleanup
 unlink $pq if -e $pq
 

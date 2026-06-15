@@ -482,6 +482,14 @@ fn DuckDB::quote_qualified_ident ($name) {
     join(".", map { DuckDB::quote_ident($_) } split(/\./, $name))
 }
 
+## Build a DuckDB list literal "['a', 'b', 'c']" from an arrayref of string
+## elements. Each element is single-quote escaped. DuckDB has first-class LIST
+## types, so this inlines a list value into SQL (an empty list yields "[]").
+fn DuckDB::format_list ($elements) {
+    die "DuckDB::format_list: elements must be an arrayref" unless ref($elements) eq "ARRAY"
+    "[" . join(", ", map { DuckDB::_str_lit($_) } @$elements) . "]"
+}
+
 ## DESCRIBE $table → rows of { column_name, column_type, null, key, default, extra }.
 fn DuckDB::describe ($table, %opts) {
     DuckDB::_ident($table, "table")
