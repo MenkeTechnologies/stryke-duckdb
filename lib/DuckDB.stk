@@ -450,6 +450,13 @@ fn DuckDB::extensions (%opts) {
     @{ DuckDB::_decode("extensions", duckdb__extensions(to_json(DuckDB::_req({}, \%opts))))->{rows} }
 }
 
+## Quote an arbitrary string as a single DuckDB identifier (double-quoted, inner
+## double-quotes doubled) so a name with spaces/keywords/punctuation can go into
+## dynamic SQL safely. Pure — no connection. Returns the quoted string.
+fn DuckDB::quote_identifier ($name) {
+    DuckDB::_decode("quote_identifier", duckdb__quote_identifier(to_json({ name => $name })))->{quoted}
+}
+
 
 # ── analytics & introspection ─────────────────────────────────────────
 #

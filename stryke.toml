@@ -1,6 +1,6 @@
 [package]
 name = "stryke-duckdb"
-version = "0.10.0"
+version = "0.11.0"
 description = "DuckDB embedded analytical SQL engine for stryke. Direct-query parquet/CSV/JSON from disk or URL. cdylib loaded in-process — :memory: dbs now persist across calls."
 authors = ["MenkeTechnologies"]
 license = "MIT"
@@ -28,6 +28,7 @@ exports = [
     "duckdb__functions",
     "duckdb__settings",
     "duckdb__extensions",
+    "duckdb__quote_identifier",
 ]
 
 [scripts]

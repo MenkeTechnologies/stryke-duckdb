@@ -284,6 +284,7 @@ DuckDB::views          %opts → @names              # view names in current sch
 DuckDB::functions      %opts → @names              # distinct function names
 DuckDB::settings       %opts → @{ {name, value, description} }
 DuckDB::extensions     %opts → @{ {extension_name, loaded, installed, description} }
+DuckDB::quote_identifier $name → $quoted            # "..." with inner " doubled; safe dynamic-SQL identifier (pure)
 DuckDB::schema         $table, %opts → { table, num_rows, columns: [...] }
 DuckDB::inspect        %opts → { version, file, file_size, databases: [...] }
 DuckDB::server_version %opts → $version_string     # live SELECT version() (e.g. "v1.5.3")

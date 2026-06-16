@@ -109,6 +109,17 @@ val @uret = DuckDB::upsert("kv", { id => 2, name => "b", hits => 5 },
 assert_eq scalar(@uret), 1, "upsert RETURNING: 1 row back"
 assert_eq $uret[0]->{name}, "b", "upsert RETURNING: row payload"
 
+# ── quote_identifier (pure; safe dynamic-SQL identifier) ─────────────
+assert_eq DuckDB::quote_identifier("users"),    q{"users"},      "quote_identifier: wraps a plain name"
+assert_eq DuckDB::quote_identifier("my table"), q{"my table"},   "quote_identifier: spaces stay inside the quotes"
+assert_eq DuckDB::quote_identifier(q{a"b}),     q{"a""b"},       "quote_identifier: inner double-quote is doubled"
+# End to end: a quoted weird column name is valid SQL DuckDB accepts.
+val $qs = "quote-test-$$"
+DuckDB::execute("CREATE TABLE qt (" . DuckDB::quote_identifier(q{a"b}) . " INTEGER)", session => $qs)
+DuckDB::execute("INSERT INTO qt VALUES (7)", session => $qs)
+assert_eq DuckDB::query_scalar("SELECT " . DuckDB::quote_identifier(q{a"b}) . " FROM qt", session => $qs), 7,
+    "quote_identifier: round-trips a weird identifier through the engine"
+
 # cleanup
 unlink $tmpdb if -e $tmpdb
 unlink "$tmpdb.wal" if -e "$tmpdb.wal"

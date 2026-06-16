@@ -447,6 +447,16 @@ fn validate_identifier(name: &str, what: &str) -> Result<String> {
     Ok(name.to_string())
 }
 
+/// Quote an arbitrary string as a single DuckDB identifier — wrap it in double
+/// quotes and double any embedded double quote (ANSI SQL / PostgreSQL rules,
+/// verified against the engine: `"a""b"` denotes the identifier `a"b`). The
+/// safe-embedding companion to `validate_identifier`: where that one accepts
+/// only bare-legal names, this lets a name with spaces, keywords, or punctuation
+/// go into dynamic SQL unharmed.
+fn quote_identifier(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
 #[no_mangle]
 pub extern "C" fn duckdb__export(args: *const c_char) -> *const c_char {
     ffi_call(args, |v| {
@@ -652,6 +662,14 @@ pub extern "C" fn duckdb__extensions(args: *const c_char) -> *const c_char {
                 &[],
             )
         })
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn duckdb__quote_identifier(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let name = v["name"].as_str().ok_or_else(|| anyhow!("missing name"))?;
+        Ok(json!({ "quoted": quote_identifier(name) }))
     })
 }
 
@@ -1235,6 +1253,42 @@ mod tests {
             validate_identifier("a1$.b2$", "table").is_ok(),
             "digit and `$` both valid in rest of each segment"
         );
+    }
+
+    #[test]
+    fn quote_identifier_doubles_inner_quotes_and_round_trips_through_engine() {
+        // Plain name still gets wrapped (so it survives even if it's a keyword).
+        assert_eq!(quote_identifier("users"), "\"users\"");
+        // Spaces and punctuation are fine inside the quotes, untouched.
+        assert_eq!(quote_identifier("my table"), "\"my table\"");
+        // A literal double quote is doubled — the ANSI/DuckDB escape.
+        assert_eq!(quote_identifier("a\"b"), "\"a\"\"b\"");
+        assert_eq!(quote_identifier("\"\""), "\"\"\"\"\"\"");
+        // The export returns the same string.
+        let out = call_export(duckdb__quote_identifier, &json!({"name": "a\"b"}));
+        assert_eq!(out["quoted"], json!("\"a\"\"b\""));
+        // End to end: quoting a weird column name produces SQL DuckDB accepts,
+        // and the column round-trips back to its raw form.
+        let sess = json!({"path": ":memory:", "session": "test-quote-identifier"});
+        let col = quote_identifier("a\"b");
+        with_conn(&sess, |c| {
+            c.execute_batch(&format!("CREATE OR REPLACE TABLE t({col} INTEGER)"))?;
+            c.execute_batch("INSERT INTO t VALUES (42)")?;
+            Ok(json!({}))
+        })
+        .unwrap();
+        let rows = with_conn(&sess, |c| {
+            run_query(c, &format!("SELECT {col} AS v FROM t"), &[])
+        })
+        .unwrap();
+        assert_eq!(
+            rows["rows"][0]["v"],
+            json!(42),
+            "quoted weird identifier is valid SQL"
+        );
+        // Missing name errors.
+        let err = call_export(duckdb__quote_identifier, &json!({}));
+        assert!(err.get("error").is_some(), "missing name → error envelope");
     }
 
     // ── appender + explain functional round-trip (embedded DuckDB) ───────────
