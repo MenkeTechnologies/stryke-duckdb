@@ -472,6 +472,18 @@ fn DuckDB::quote_ident ($name) {
     qq{"$e"}
 }
 
+## Quote a VALUE as a SQL literal — the public companion to quote_ident (which
+## quotes names). undef → NULL, a number → the bare numeric literal, anything
+## else → a single-quoted string with embedded quotes doubled. Refs are
+## rejected. Lets you safely inline data into SQL: quote_literal("O'Brien") →
+## `'O''Brien'`, quote_literal(42) → `42`, quote_literal(undef) → `NULL`.
+fn DuckDB::quote_literal ($v) {
+    return "NULL" unless defined $v
+    die "DuckDB::quote_literal: cannot quote a " . ref($v) . " ref" if ref($v)
+    return "$v" if looks_like_number($v)
+    DuckDB::_str_lit($v)
+}
+
 ## Quote a dotted, schema-qualified identifier — each "."-separated segment is
 ## quoted independently and rejoined, so "main.my table" → `"main"."my table"`.
 ## Empty segments (leading/trailing/doubled dot) are rejected.

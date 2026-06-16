@@ -86,6 +86,13 @@ assert_eq DuckDB::quote_qualified_ident("t"), "\"t\"",      "quote_qualified_ide
 assert_dies fn { DuckDB::quote_qualified_ident("main.") },  "quote_qualified_ident: rejects empty trailing segment"
 assert_dies fn { DuckDB::quote_qualified_ident("a..b") },   "quote_qualified_ident: rejects doubled dot"
 
+# ── quote_literal (value literals: NULL / bare number / quoted string) ──
+assert_eq DuckDB::quote_literal("O'Brien"), "'O''Brien'", "quote_literal: string single-quoted, embedded quote doubled"
+assert_eq DuckDB::quote_literal(42),        "42",         "quote_literal: number is a bare literal"
+assert_eq DuckDB::quote_literal(undef),     "NULL",       "quote_literal: undef is NULL"
+assert_eq DuckDB::quote_literal("plain"),   "'plain'",    "quote_literal: plain string quoted"
+assert_dies fn { DuckDB::quote_literal([1,2]) }, "quote_literal: rejects a ref"
+
 # ── parse_qualified_ident (inverse of quote_qualified_ident) ──
 val $segs = DuckDB::parse_qualified_ident("\"main\".\"my table\"")
 assert_eq scalar(@$segs), 2,      "parse_qualified_ident: two segments"
