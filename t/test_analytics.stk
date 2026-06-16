@@ -122,6 +122,16 @@ assert_eq DuckDB::format_list(["o'brien"]),     "['o''brien']",     "format_list
 assert_eq DuckDB::format_list([]),              "[]",               "format_list: empty list"
 assert_dies fn { DuckDB::format_list("nope") },                     "format_list: rejects non-arrayref"
 
+# ── format_in_list (IN-clause operand; mixed types via quote_literal) ──
+assert_eq DuckDB::format_in_list([1, 2, 3]),    "(1, 2, 3)",        "format_in_list: bare numbers"
+assert_eq DuckDB::format_in_list(["a", q{O'Brien}]), q{('a', 'O''Brien')}, "format_in_list: strings quoted, single-quote doubled"
+assert_eq DuckDB::format_in_list([1, "a", undef]), "(1, 'a', NULL)", "format_in_list: mixed number/string/undef"
+assert_eq DuckDB::format_in_list([]),           "(NULL)",           "format_in_list: empty → (NULL), matches nothing"
+assert_dies fn { DuckDB::format_in_list("nope") },                  "format_in_list: rejects non-arrayref"
+# End to end: the built IN-list filters a VALUES table correctly.
+assert_eq DuckDB::query_scalar("SELECT count(*) FROM (VALUES (1),(2),(3),(4)) t(x) WHERE x IN " . DuckDB::format_in_list([1, 3])), 2, "format_in_list: filters via a real IN clause"
+assert_eq DuckDB::query_scalar("SELECT count(*) FROM (VALUES (1),(2)) t(x) WHERE x IN " . DuckDB::format_in_list([])), 0, "format_in_list: empty (NULL) matches no rows"
+
 # ── format_struct (DuckDB STRUCT literal) ──
 assert_eq DuckDB::format_struct(+{ b => "2", a => "1" }), "{'a': '1', 'b': '2'}", "format_struct: keys sorted, struct literal"
 assert_eq DuckDB::format_struct(+{ name => "o'brien" }),  "{'name': 'o''brien'}", "format_struct: single quotes doubled in values"

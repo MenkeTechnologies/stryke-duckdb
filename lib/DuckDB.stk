@@ -567,6 +567,18 @@ fn DuckDB::format_list ($elements) {
     "[" . join(", ", map { DuckDB::_str_lit($_) } @$elements) . "]"
 }
 
+## Build a parenthesized IN-list "(v1, v2, ...)" from an arrayref of $values for a
+## `col IN (...)` predicate. Each element is quoted with quote_literal, so a number
+## stays bare, undef becomes NULL, and a string is single-quoted — the list can mix
+## types. An empty list yields "(NULL)", valid SQL that matches nothing (DuckDB
+## rejects a literal empty `IN ()`). Distinct from format_list, which builds a
+## bracketed LIST literal with every element string-quoted.
+fn DuckDB::format_in_list ($values) {
+    die "DuckDB::format_in_list: values must be an arrayref" unless ref($values) eq "ARRAY"
+    return "(NULL)" unless @$values
+    "(" . join(", ", map { DuckDB::quote_literal($_) } @$values) . ")"
+}
+
 ## Build a DuckDB STRUCT literal "{'a': '1', 'b': '2'}" from a hashref of string
 ## fields. Keys are emitted in sorted order for stable output; both keys and
 ## values are single-quote escaped. The struct companion to format_list — DuckDB

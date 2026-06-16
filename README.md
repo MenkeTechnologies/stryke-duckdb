@@ -209,6 +209,7 @@ DuckDB::quote_like $s → $pattern_body             # escape % _ \ so $s matches
 DuckDB::quote_qualified_ident $name → $quoted     # main.my table → "main"."my table"
 DuckDB::parse_qualified_ident $name → \@parts     # "main"."my table" → ["main","my table"]; inverse of quote_qualified_ident
 DuckDB::format_list \@elements → $literal         # ["a","b"] → ['a', 'b'] (DuckDB LIST literal)
+DuckDB::format_in_list \@values → $operand        # [1,"a",undef] → (1, 'a', NULL) for `col IN (...)`; empty → (NULL)
 DuckDB::format_struct \%fields → $literal         # {a=>1,b=>2} → {'a': '1', 'b': '2'} (DuckDB STRUCT literal, keys sorted)
 DuckDB::format_map \%pairs → $literal             # {a=>1,b=>2} → MAP {'a': '1', 'b': '2'} (DuckDB MAP literal, keys sorted)
 ```
