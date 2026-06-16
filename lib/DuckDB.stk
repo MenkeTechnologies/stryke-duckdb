@@ -479,6 +479,17 @@ fn DuckDB::quote_ident ($name) {
     qq{"$e"}
 }
 
+## Decode a double-quoted DuckDB identifier back to its raw name — the inverse of
+## quote_ident. Strips the surrounding double quotes and un-doubles embedded "":
+## `"we""ird"` → `we"ird`. Dies on input that isn't a "..."-quoted identifier or
+## that has an unpaired embedded quote.
+fn DuckDB::unquote_ident ($quoted) {
+    die "DuckDB::unquote_ident: not a quoted identifier: $quoted" unless length($quoted) >= 2 && $quoted =~ /^".*"$/s
+    var $inner = substr($quoted, 1, length($quoted) - 2)
+    die "DuckDB::unquote_ident: malformed (unpaired quote): $quoted" if (($inner =~ tr/"//) % 2) != 0
+    $inner =~ s/""/"/gr
+}
+
 ## Quote a VALUE as a SQL literal — the public companion to quote_ident (which
 ## quotes names). undef → NULL, a number → the bare numeric literal, anything
 ## else → a single-quoted string with embedded quotes doubled. Refs are

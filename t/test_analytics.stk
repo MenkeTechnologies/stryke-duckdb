@@ -81,6 +81,12 @@ assert_eq DuckDB::_str_lit("o'brien"), "'o''brien'", "_str_lit doubles single qu
 # ── quote_ident / quote_qualified_ident (ANSI double-quote quoting) ──
 assert_eq DuckDB::quote_ident("my col"),  "\"my col\"",     "quote_ident: spaces quoted"
 assert_eq DuckDB::quote_ident("we\"ird"), "\"we\"\"ird\"",  "quote_ident: embedded quote doubled"
+# unquote_ident: inverse of quote_ident (strip quotes, un-double "").
+assert_eq DuckDB::unquote_ident("\"my col\""),      "my col",  "unquote_ident: strips the surrounding quotes"
+assert_eq DuckDB::unquote_ident("\"we\"\"ird\""),   "we\"ird", "unquote_ident: un-doubles embedded quotes"
+assert_eq DuckDB::unquote_ident(DuckDB::quote_ident("a\"b\"c")), "a\"b\"c", "unquote_ident: round-trips quote_ident"
+assert_dies fn { DuckDB::unquote_ident("plain") },  "unquote_ident: rejects an unquoted name"
+assert_dies fn { DuckDB::unquote_ident("\"a\"b\"") }, "unquote_ident: rejects an unpaired embedded quote"
 assert_eq DuckDB::quote_qualified_ident("main.my table"), "\"main\".\"my table\"", "quote_qualified_ident: each segment quoted"
 assert_eq DuckDB::quote_qualified_ident("t"), "\"t\"",      "quote_qualified_ident: bare name still quoted"
 assert_dies fn { DuckDB::quote_qualified_ident("main.") },  "quote_qualified_ident: rejects empty trailing segment"
