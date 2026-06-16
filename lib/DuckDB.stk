@@ -631,6 +631,72 @@ fn DuckDB::format_in_list ($values) {
     "(" . join(", ", map { DuckDB::quote_literal($_) } @$values) . ")"
 }
 
+## Parse a parenthesized IN-list back into an arrayref of values — the inverse of
+## format_in_list. A bare NULL (case-insensitive) becomes undef, a numeric token
+## becomes a number, and a '...'-quoted token is decoded with unquote_literal (''
+## un-doubles). Commas inside quotes don't split. "(NULL)" — the empty-list
+## sentinel format_in_list emits — parses to a single undef element. Dies on
+## input that isn't (...)-wrapped or has an unterminated quote.
+fn DuckDB::parse_in_list ($list) {
+    die "DuckDB::parse_in_list: list must be a string" if ref($list)
+    var $t = $list =~ s/^\s+|\s+$//gr
+    die "DuckDB::parse_in_list: not an IN list (expected (...)): $list" unless length($t) >= 2 && $t =~ /^\(.*\)$/s
+    var $inner = substr($t, 1, length($t) - 2) =~ s/^\s+|\s+$//gr
+    var @elements
+    return \@elements if $inner eq ""
+    var @chars = split //, $inner
+    var $n     = scalar(@chars)
+    var $i     = 0
+    var $elem  = undef
+    var $buf   = ""
+    while ($i < $n) {
+        while ($i < $n && $chars[$i] =~ /\s/) { $i++ }
+        if ($i < $n && $chars[$i] eq "'") {
+            $buf = "'"
+            $i++
+            var $closed = 0
+            while ($i < $n) {
+                val $c = $chars[$i]
+                if ($c eq "'" && $i + 1 < $n && $chars[$i + 1] eq "'") {
+                    $buf .= "''"
+                    $i  += 2
+                } elsif ($c eq "'") {
+                    $buf .= "'"
+                    $i++
+                    $closed = 1
+                    last
+                } else {
+                    $buf .= $c
+                    $i++
+                }
+            }
+            die "DuckDB::parse_in_list: unterminated quoted element in: $list" unless $closed
+            $elem = DuckDB::unquote_literal($buf)
+        } else {
+            $buf = ""
+            while ($i < $n && $chars[$i] ne ",") {
+                $buf .= $chars[$i]
+                $i++
+            }
+            $buf =~ s/\s+$//
+            if ($buf =~ /^null$/i) {
+                $elem = undef
+            } elsif (looks_like_number($buf)) {
+                $elem = $buf + 0
+            } else {
+                $elem = $buf
+            }
+        }
+        push @elements, $elem
+        while ($i < $n && $chars[$i] =~ /\s/) { $i++ }
+        if ($i < $n) {
+            die "DuckDB::parse_in_list: unexpected `$chars[$i]` after element in: $list" unless $chars[$i] eq ","
+            $i++
+        }
+    }
+    \@elements
+}
+
 ## Build a DuckDB STRUCT literal "{'a': '1', 'b': '2'}" from a hashref of string
 ## fields. Keys are emitted in sorted order for stable output; both keys and
 ## values are single-quote escaped. The struct companion to format_list — DuckDB
