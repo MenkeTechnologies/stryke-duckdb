@@ -212,6 +212,7 @@ DuckDB::unquote_like $pattern → $literal          # inverse: recover the liter
 DuckDB::quote_qualified_ident $name → $quoted     # main.my table → "main"."my table"
 DuckDB::parse_qualified_ident $name → \@parts     # "main"."my table" → ["main","my table"]; inverse of quote_qualified_ident
 DuckDB::format_list \@elements → $literal         # ["a","b"] → ['a', 'b'] (DuckDB LIST literal)
+DuckDB::parse_list $literal → \@elements          # ['a', 'b'] → ["a","b"]; inverse of format_list (numbers bare, '' un-doubles, comma-in-quotes literal)
 DuckDB::format_in_list \@values → $operand        # [1,"a",undef] → (1, 'a', NULL) for `col IN (...)`; empty → (NULL)
 DuckDB::parse_in_list $operand → \@values         # (1, 'a', NULL) → [1,"a",undef]; inverse of format_in_list ('' un-doubles, comma-in-quotes literal)
 DuckDB::format_struct \%fields → $literal         # {a=>1,b=>2} → {'a': '1', 'b': '2'} (DuckDB STRUCT literal, keys sorted)

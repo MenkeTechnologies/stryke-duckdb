@@ -638,9 +638,20 @@ fn DuckDB::format_in_list ($values) {
 ## sentinel format_in_list emits — parses to a single undef element. Dies on
 ## input that isn't (...)-wrapped or has an unterminated quote.
 fn DuckDB::parse_in_list ($list) {
-    die "DuckDB::parse_in_list: list must be a string" if ref($list)
-    var $t = $list =~ s/^\s+|\s+$//gr
-    die "DuckDB::parse_in_list: not an IN list (expected (...)): $list" unless length($t) >= 2 && $t =~ /^\(.*\)$/s
+    DuckDB::_parse_delimited($list, "(", ")", "DuckDB::parse_in_list", "IN list")
+}
+
+## Shared comma-separated element parser for the bracketed-literal inverses
+## (parse_in_list, parse_list). $open/$close are the surrounding delimiters. Each
+## element: a '...'-quoted token is decoded with unquote_literal ('' un-doubles,
+## commas inside quotes don't split), a bare NULL (case-insensitive) becomes
+## undef, a numeric token becomes a number, anything else stays a string. Returns
+## an arrayref. Dies (tagged $name, $kind) on the wrong wrapper or an unterminated
+## quote.
+fn DuckDB::_parse_delimited ($str, $open, $close, $name, $kind) {
+    die "$name: input must be a string" if ref($str)
+    var $t = $str =~ s/^\s+|\s+$//gr
+    die "$name: not a $kind (expected ${open}...${close}): $str" unless length($t) >= 2 && substr($t, 0, 1) eq $open && substr($t, length($t) - 1, 1) eq $close
     var $inner = substr($t, 1, length($t) - 2) =~ s/^\s+|\s+$//gr
     var @elements
     return \@elements if $inner eq ""
@@ -670,7 +681,7 @@ fn DuckDB::parse_in_list ($list) {
                     $i++
                 }
             }
-            die "DuckDB::parse_in_list: unterminated quoted element in: $list" unless $closed
+            die "$name: unterminated quoted element in: $str" unless $closed
             $elem = DuckDB::unquote_literal($buf)
         } else {
             $buf = ""
@@ -690,11 +701,21 @@ fn DuckDB::parse_in_list ($list) {
         push @elements, $elem
         while ($i < $n && $chars[$i] =~ /\s/) { $i++ }
         if ($i < $n) {
-            die "DuckDB::parse_in_list: unexpected `$chars[$i]` after element in: $list" unless $chars[$i] eq ","
+            die "$name: unexpected `$chars[$i]` after element in: $str" unless $chars[$i] eq ","
             $i++
         }
     }
     \@elements
+}
+
+## Parse a DuckDB LIST literal "['a', 'b', 'c']" (or "[1, 2, 3]") back into an
+## arrayref — the inverse of format_list. Each element is decoded the same way as
+## parse_in_list ('...'-quoted → unquote_literal, bare NULL → undef, numeric →
+## number, else string); commas inside quotes don't split. An empty "[]" yields
+## an empty list. Dies on input that isn't [...]-wrapped or has an unterminated
+## quote.
+fn DuckDB::parse_list ($list) {
+    DuckDB::_parse_delimited($list, "[", "]", "DuckDB::parse_list", "LIST literal")
 }
 
 ## Build a DuckDB STRUCT literal "{'a': '1', 'b': '2'}" from a hashref of string

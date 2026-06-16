@@ -145,6 +145,14 @@ assert_eq DuckDB::format_list(["o'brien"]),     "['o''brien']",     "format_list
 assert_eq DuckDB::format_list([]),              "[]",               "format_list: empty list"
 assert_dies fn { DuckDB::format_list("nope") },                     "format_list: rejects non-arrayref"
 
+# ── parse_list (inverse of format_list) ──
+assert_eq join("|", @{ DuckDB::parse_list("['a', 'b', 'c']") }), "a|b|c", "parse_list: decodes quoted elements"
+assert_eq join("|", @{ DuckDB::parse_list("[1, 2, 3]") }),       "1|2|3", "parse_list: bare numbers"
+assert_eq join("|", @{ DuckDB::parse_list(DuckDB::format_list(["o'brien", "a, b"])) }), "o'brien|a, b", "parse_list: round-trips format_list ('' un-doubles, comma-in-quotes literal)"
+assert_eq scalar(@{ DuckDB::parse_list("[]") }), 0,                "parse_list: empty list → no elements"
+assert_dies fn { DuckDB::parse_list("(1, 2)") },                   "parse_list: rejects a non-[...] wrapper"
+assert_dies fn { DuckDB::parse_list("['unterminated]") },          "parse_list: rejects an unterminated quote"
+
 # ── format_in_list (IN-clause operand; mixed types via quote_literal) ──
 assert_eq DuckDB::format_in_list([1, 2, 3]),    "(1, 2, 3)",        "format_in_list: bare numbers"
 assert_eq DuckDB::format_in_list(["a", q{O'Brien}]), q{('a', 'O''Brien')}, "format_in_list: strings quoted, single-quote doubled"
