@@ -206,6 +206,7 @@ DuckDB::upsert      $table, $row_href, %opts → $affected | @rows   # INSERT �
 DuckDB::quote_ident $name → $quoted               # ANSI double-quote: my col → "my col"
 DuckDB::unquote_ident $quoted → $name             # inverse of quote_ident: "we""ird" → we"ird (un-double, strip)
 DuckDB::quote_literal $v → $literal               # value literal: undef→NULL, number→bare, string→'...' ('' doubled)
+DuckDB::unquote_literal $quoted → $value          # inverse (string form): 'O''Brien' → O'Brien (un-double, strip)
 DuckDB::quote_like $s → $pattern_body             # escape % _ \ so $s matches literally in LIKE … ESCAPE '\'
 DuckDB::quote_qualified_ident $name → $quoted     # main.my table → "main"."my table"
 DuckDB::parse_qualified_ident $name → \@parts     # "main"."my table" → ["main","my table"]; inverse of quote_qualified_ident

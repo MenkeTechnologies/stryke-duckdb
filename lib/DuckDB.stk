@@ -502,6 +502,19 @@ fn DuckDB::quote_literal ($v) {
     DuckDB::_str_lit($v)
 }
 
+## Decode a single-quoted DuckDB string literal back to its raw value — the
+## inverse of quote_literal's string form (mirrors unquote_ident for single
+## quotes). Strips the surrounding quotes and un-doubles embedded '': `'O''Brien'`
+## → `O'Brien`. Dies on input that isn't a '...'-quoted literal or has an unpaired
+## embedded quote. NULL and bare-number literals are NOT handled — only the
+## quoted-string form.
+fn DuckDB::unquote_literal ($quoted) {
+    die "DuckDB::unquote_literal: not a quoted literal: $quoted" unless length($quoted) >= 2 && $quoted =~ /^'.*'$/s
+    var $inner = substr($quoted, 1, length($quoted) - 2)
+    die "DuckDB::unquote_literal: malformed (unpaired quote): $quoted" if (($inner =~ tr/'//) % 2) != 0
+    $inner =~ s/''/'/gr
+}
+
 ## Escape a string so it matches LITERALLY inside a DuckDB LIKE pattern — the
 ## wildcard metacharacters `%` (any run) and `_` (any one char) and the escape
 ## char `\` itself are each backslash-escaped (verified against the engine).
