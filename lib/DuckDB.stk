@@ -558,6 +558,16 @@ fn DuckDB::format_struct ($fields) {
     "{" . join(", ", map { DuckDB::_str_lit($_) . ": " . DuckDB::_str_lit($fields->{$_}) } sort keys %$fields) . "}"
 }
 
+## Build a DuckDB MAP literal "MAP {'a': '1', 'b': '2'}" from a hashref of string
+## pairs. Keys are emitted in sorted order; both keys and values are single-quote
+## escaped. The map companion to format_struct — unlike a STRUCT (fixed named
+## fields), a MAP has dynamic keys, so this inlines a map value into SQL (an
+## empty hashref yields "MAP {}").
+fn DuckDB::format_map ($pairs) {
+    die "DuckDB::format_map: pairs must be a hashref" unless ref($pairs) eq "HASH"
+    "MAP {" . join(", ", map { DuckDB::_str_lit($_) . ": " . DuckDB::_str_lit($pairs->{$_}) } sort keys %$pairs) . "}"
+}
+
 ## DESCRIBE $table → rows of { column_name, column_type, null, key, default, extra }.
 fn DuckDB::describe ($table, %opts) {
     DuckDB::_ident($table, "table")

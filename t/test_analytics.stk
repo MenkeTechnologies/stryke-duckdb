@@ -116,6 +116,12 @@ assert_eq DuckDB::format_struct(+{ name => "o'brien" }),  "{'name': 'o''brien'}"
 assert_eq DuckDB::format_struct(+{}),                     "{}",                   "format_struct: empty struct"
 assert_dies fn { DuckDB::format_struct(["nope"]) },                               "format_struct: rejects non-hashref"
 
+# ── format_map (DuckDB MAP literal) ──
+assert_eq DuckDB::format_map(+{ b => "2", a => "1" }), "MAP {'a': '1', 'b': '2'}", "format_map: MAP keyword + sorted keys"
+assert_eq DuckDB::format_map(+{ name => "o'brien" }),  "MAP {'name': 'o''brien'}", "format_map: single quotes doubled in values"
+assert_eq DuckDB::format_map(+{}),                     "MAP {}",                   "format_map: empty map"
+assert_dies fn { DuckDB::format_map(["nope"]) },                                   "format_map: rejects non-hashref"
+
 # cleanup
 unlink $pq if -e $pq
 
