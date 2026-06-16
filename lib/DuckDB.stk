@@ -491,6 +491,18 @@ fn DuckDB::quote_literal ($v) {
     DuckDB::_str_lit($v)
 }
 
+## Escape a string so it matches LITERALLY inside a DuckDB LIKE pattern — the
+## wildcard metacharacters `%` (any run) and `_` (any one char) and the escape
+## char `\` itself are each backslash-escaped (verified against the engine).
+## The result is the pattern BODY, not a quoted literal — wrap it with
+## quote_literal and an explicit `ESCAPE '\'` clause, e.g. to match rows whose
+## name contains the literal string $s:
+##   "name LIKE " . DuckDB::quote_literal('%' . DuckDB::quote_like($s) . '%') . " ESCAPE '\\'"
+## Without quote_like, a `%`/`_`/`\` in user input would act as a wildcard.
+fn DuckDB::quote_like ($s) {
+    $s =~ s/([\\%_])/\\$1/gr
+}
+
 ## Quote a dotted, schema-qualified identifier — each "."-separated segment is
 ## quoted independently and rejoined, so "main.my table" → `"main"."my table"`.
 ## Empty segments (leading/trailing/doubled dot) are rejected.

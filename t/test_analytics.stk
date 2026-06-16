@@ -93,6 +93,18 @@ assert_eq DuckDB::quote_literal(undef),     "NULL",       "quote_literal: undef 
 assert_eq DuckDB::quote_literal("plain"),   "'plain'",    "quote_literal: plain string quoted"
 assert_dies fn { DuckDB::quote_literal([1,2]) }, "quote_literal: rejects a ref"
 
+# ── quote_like (escape % _ \ for a literal LIKE match) ──
+assert_eq DuckDB::quote_like("100%off"), "100\\%off",  "quote_like: % escaped"
+assert_eq DuckDB::quote_like("a_b"),     "a\\_b",       "quote_like: _ escaped"
+assert_eq DuckDB::quote_like("c:\\p"),   "c:\\\\p",     "quote_like: backslash escaped"
+assert_eq DuckDB::quote_like("plain"),   "plain",       "quote_like: ordinary text untouched"
+# End to end: a literal "100%off" matches only itself, not "100Xoff" (the % is not a wildcard).
+val $pat = DuckDB::quote_literal("%" . DuckDB::quote_like("100%off") . "%")
+assert_eq DuckDB::query_scalar("SELECT 'sale 100%off now' LIKE $pat ESCAPE '\\'", session => $s), 1,
+    "quote_like: literal % matches itself through the engine"
+assert_eq DuckDB::query_scalar("SELECT 'sale 100Xoff now' LIKE $pat ESCAPE '\\'", session => $s), 0,
+    "quote_like: escaped % does not act as a wildcard"
+
 # ── parse_qualified_ident (inverse of quote_qualified_ident) ──
 val $segs = DuckDB::parse_qualified_ident("\"main\".\"my table\"")
 assert_eq scalar(@$segs), 2,      "parse_qualified_ident: two segments"
