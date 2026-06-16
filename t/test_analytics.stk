@@ -119,6 +119,15 @@ assert_eq DuckDB::query_scalar("SELECT 'sale 100%off now' LIKE $pat ESCAPE '\\'"
 assert_eq DuckDB::query_scalar("SELECT 'sale 100Xoff now' LIKE $pat ESCAPE '\\'", session => $s), 0,
     "quote_like: escaped % does not act as a wildcard"
 
+# ── unquote_like (inverse of quote_like) ──
+assert_eq DuckDB::unquote_like("100\\%off"), "100%off", "unquote_like: escaped % decodes to a literal"
+assert_eq DuckDB::unquote_like("a\\_b"),     "a_b",     "unquote_like: escaped _ decodes to a literal"
+assert_eq DuckDB::unquote_like("c:\\\\p"),   "c:\\p",   "unquote_like: doubled backslash decodes to one"
+assert_eq DuckDB::unquote_like("plain"),     "plain",   "unquote_like: ordinary text untouched"
+assert_eq DuckDB::unquote_like(DuckDB::quote_like("50%_off\\sale")), "50%_off\\sale", "unquote_like: round-trips quote_like"
+assert_dies fn { DuckDB::unquote_like("a%b") },    "unquote_like: rejects an unescaped wildcard"
+assert_dies fn { DuckDB::unquote_like("trail\\") }, "unquote_like: rejects a dangling backslash"
+
 # ── parse_qualified_ident (inverse of quote_qualified_ident) ──
 val $segs = DuckDB::parse_qualified_ident("\"main\".\"my table\"")
 assert_eq scalar(@$segs), 2,      "parse_qualified_ident: two segments"

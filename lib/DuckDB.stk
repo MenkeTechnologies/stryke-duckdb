@@ -527,6 +527,34 @@ fn DuckDB::quote_like ($s) {
     $s =~ s/([\\%_])/\\$1/gr
 }
 
+## Inverse of quote_like: recover the literal from a LIKE pattern body that
+## quote_like produced — `\%` → `%`, `\_` → `_`, `\\` → `\`. An unescaped wildcard
+## (`%`/`_`) or a trailing backslash means the input is a real pattern, not a
+## quote_like-escaped literal, so both are rejected; this makes
+## unquote_like(quote_like($s)) == $s for every $s.
+fn DuckDB::unquote_like ($pattern) {
+    var $out = ""
+    var @chars = split(//, $pattern)
+    var $n = scalar(@chars)
+    var $i = 0
+    while ($i < $n) {
+        val $c = $chars[$i]
+        if ($c eq "\\") {
+            die "DuckDB::unquote_like: dangling escape (trailing backslash): $pattern" if $i + 1 >= $n
+            val $x = $chars[$i + 1]
+            die "DuckDB::unquote_like: invalid escape sequence \\$x: $pattern" unless $x eq "\\" || $x eq "%" || $x eq "_"
+            $out .= $x
+            $i += 2
+        } elsif ($c eq "%" || $c eq "_") {
+            die "DuckDB::unquote_like: unescaped wildcard `$c` (not a LIKE-escaped literal): $pattern"
+        } else {
+            $out .= $c
+            $i += 1
+        }
+    }
+    $out
+}
+
 ## Quote a dotted, schema-qualified identifier — each "."-separated segment is
 ## quoted independently and rejoined, so "main.my table" → `"main"."my table"`.
 ## Empty segments (leading/trailing/doubled dot) are rejected.

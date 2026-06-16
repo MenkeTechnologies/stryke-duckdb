@@ -208,6 +208,7 @@ DuckDB::unquote_ident $quoted → $name             # inverse of quote_ident: "w
 DuckDB::quote_literal $v → $literal               # value literal: undef→NULL, number→bare, string→'...' ('' doubled)
 DuckDB::unquote_literal $quoted → $value          # inverse (string form): 'O''Brien' → O'Brien (un-double, strip)
 DuckDB::quote_like $s → $pattern_body             # escape % _ \ so $s matches literally in LIKE … ESCAPE '\'
+DuckDB::unquote_like $pattern → $literal          # inverse: recover the literal (100\%off → 100%off); rejects an unescaped wildcard or dangling backslash
 DuckDB::quote_qualified_ident $name → $quoted     # main.my table → "main"."my table"
 DuckDB::parse_qualified_ident $name → \@parts     # "main"."my table" → ["main","my table"]; inverse of quote_qualified_ident
 DuckDB::format_list \@elements → $literal         # ["a","b"] → ['a', 'b'] (DuckDB LIST literal)
