@@ -70,6 +70,7 @@ assert_ok exists &DuckDB::parse_list, "DuckDB::parse_list exists"
 assert_ok exists &DuckDB::format_in_list, "DuckDB::format_in_list exists"
 assert_ok exists &DuckDB::parse_in_list, "DuckDB::parse_in_list exists"
 assert_ok exists &DuckDB::format_struct, "DuckDB::format_struct exists"
+assert_ok exists &DuckDB::parse_struct, "DuckDB::parse_struct exists"
 assert_ok exists &DuckDB::format_map, "DuckDB::format_map exists"
 
 test_run

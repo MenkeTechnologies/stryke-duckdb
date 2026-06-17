@@ -738,6 +738,80 @@ fn DuckDB::format_map ($pairs) {
     "MAP {" . join(", ", map { DuckDB::_str_lit($_) . ": " . DuckDB::_str_lit($pairs->{$_}) } sort keys %$pairs) . "}"
 }
 
+## Parse the "'k': v, 'k2': v2" body of a brace literal into a hashref. Keys are
+## single-quoted (unquote_literal'd); a value is unquote_literal'd when quoted, or
+## taken bare and classified as undef (NULL), a number, or text otherwise. Shared
+## by parse_struct (and any future parse_map). Quote-aware: commas and colons
+## inside '...' do not split.
+fn DuckDB::_parse_brace_pairs ($inner, $name, $orig) {
+    var %out
+    var $trimmed = $inner =~ s/^\s+|\s+$//gr
+    return \%out if $trimmed eq ""
+    var @chars = split //, $trimmed
+    var $n     = scalar(@chars)
+    var $i     = 0
+    var $key   = undef
+    var $buf   = ""
+    var $closed = 0
+    var $c     = ""
+    while ($i < $n) {
+        while ($i < $n && $chars[$i] =~ /\s/) { $i++ }
+        die "$name: expected a quoted key in: $orig" unless $i < $n && $chars[$i] eq "'"
+        $buf = "'"
+        $i++
+        $closed = 0
+        while ($i < $n) {
+            $c = $chars[$i]
+            if ($c eq "'" && $i + 1 < $n && $chars[$i + 1] eq "'") { $buf .= "''"; $i += 2 }
+            elsif ($c eq "'") { $buf .= "'"; $i++; $closed = 1; last }
+            else { $buf .= $c; $i++ }
+        }
+        die "$name: unterminated key in: $orig" unless $closed
+        $key = DuckDB::unquote_literal($buf)
+        while ($i < $n && $chars[$i] =~ /\s/) { $i++ }
+        die "$name: expected ':' after key in: $orig" unless $i < $n && $chars[$i] eq ":"
+        $i++
+        while ($i < $n && $chars[$i] =~ /\s/) { $i++ }
+        if ($i < $n && $chars[$i] eq "'") {
+            $buf = "'"
+            $i++
+            $closed = 0
+            while ($i < $n) {
+                $c = $chars[$i]
+                if ($c eq "'" && $i + 1 < $n && $chars[$i + 1] eq "'") { $buf .= "''"; $i += 2 }
+                elsif ($c eq "'") { $buf .= "'"; $i++; $closed = 1; last }
+                else { $buf .= $c; $i++ }
+            }
+            die "$name: unterminated value for key '$key' in: $orig" unless $closed
+            $out{$key} = DuckDB::unquote_literal($buf)
+        } else {
+            $buf = ""
+            while ($i < $n && $chars[$i] ne ",") { $buf .= $chars[$i]; $i++ }
+            $buf =~ s/\s+$//
+            if ($buf =~ /^null$/i) { $out{$key} = undef }
+            elsif (looks_like_number($buf)) { $out{$key} = $buf + 0 }
+            else { $out{$key} = $buf }
+        }
+        while ($i < $n && $chars[$i] =~ /\s/) { $i++ }
+        if ($i < $n) {
+            die "$name: expected ',' between pairs in: $orig" unless $chars[$i] eq ","
+            $i++
+        }
+    }
+    \%out
+}
+
+## Parse a DuckDB STRUCT literal "{'a': '1', 'b': '2'}" back into a hashref — the
+## inverse of format_struct. Keys and quoted values are unquote_literal'd; a bare
+## value is read as undef (NULL), a number, or text. Quote-aware splitting, so a
+## comma or colon inside '...' stays in its field. An empty "{}" yields {}.
+fn DuckDB::parse_struct ($struct) {
+    die "DuckDB::parse_struct: input must be a string" if ref($struct)
+    var $t = $struct =~ s/^\s+|\s+$//gr
+    die "DuckDB::parse_struct: not a STRUCT literal (expected {...}): $struct" unless length($t) >= 2 && substr($t, 0, 1) eq "{" && substr($t, length($t) - 1, 1) eq "}"
+    DuckDB::_parse_brace_pairs(substr($t, 1, length($t) - 2), "DuckDB::parse_struct", $struct)
+}
+
 ## DESCRIBE $table → rows of { column_name, column_type, null, key, default, extra }.
 fn DuckDB::describe ($table, %opts) {
     DuckDB::_ident($table, "table")

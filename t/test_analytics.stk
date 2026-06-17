@@ -180,6 +180,20 @@ assert_eq DuckDB::format_struct(+{ name => "o'brien" }),  "{'name': 'o''brien'}"
 assert_eq DuckDB::format_struct(+{}),                     "{}",                   "format_struct: empty struct"
 assert_dies fn { DuckDB::format_struct(["nope"]) },                               "format_struct: rejects non-hashref"
 
+# ── parse_struct (inverse of format_struct) ──
+val $ps = DuckDB::parse_struct("{'a': '1', 'b': 'x'}")
+assert_eq $ps->{a}, "1",                          "parse_struct: decodes quoted value a"
+assert_eq $ps->{b}, "x",                          "parse_struct: decodes quoted value b"
+val $rt = DuckDB::parse_struct(DuckDB::format_struct(+{ name => "o'brien", note => "a, b: c" }))
+assert_eq $rt->{name}, "o'brien",                 "parse_struct: round-trips format_struct ('' un-doubles)"
+assert_eq $rt->{note}, "a, b: c",                 "parse_struct: comma/colon inside quotes stay literal"
+assert_eq scalar(keys %{ DuckDB::parse_struct("{}") }), 0, "parse_struct: empty struct → empty hash"
+val $bare = DuckDB::parse_struct("{'n': 5, 'z': null}")
+assert_eq $bare->{n}, 5,                          "parse_struct: bare number value"
+assert_eq defined($bare->{z}), 0,                 "parse_struct: bare null → undef"
+assert_dies fn { DuckDB::parse_struct("(x)") },   "parse_struct: rejects a non-{...} wrapper"
+assert_dies fn { DuckDB::parse_struct("{'a': 'unterminated}") }, "parse_struct: rejects an unterminated quote"
+
 # ── format_map (DuckDB MAP literal) ──
 assert_eq DuckDB::format_map(+{ b => "2", a => "1" }), "MAP {'a': '1', 'b': '2'}", "format_map: MAP keyword + sorted keys"
 assert_eq DuckDB::format_map(+{ name => "o'brien" }),  "MAP {'name': 'o''brien'}", "format_map: single quotes doubled in values"
