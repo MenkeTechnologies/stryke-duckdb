@@ -200,6 +200,21 @@ assert_eq DuckDB::format_map(+{ name => "o'brien" }),  "MAP {'name': 'o''brien'}
 assert_eq DuckDB::format_map(+{}),                     "MAP {}",                   "format_map: empty map"
 assert_dies fn { DuckDB::format_map(["nope"]) },                                   "format_map: rejects non-hashref"
 
+# ── parse_map (inverse of format_map) ──
+val $pm = DuckDB::parse_map("MAP {'a': '1', 'b': 'x'}")
+assert_eq $pm->{a}, "1",                          "parse_map: decodes quoted value a"
+assert_eq $pm->{b}, "x",                          "parse_map: decodes quoted value b"
+val $pmrt = DuckDB::parse_map(DuckDB::format_map(+{ name => "o'brien", note => "a, b: c" }))
+assert_eq $pmrt->{name}, "o'brien",               "parse_map: round-trips format_map ('' un-doubles)"
+assert_eq $pmrt->{note}, "a, b: c",               "parse_map: comma/colon inside quotes stay literal"
+assert_eq scalar(keys %{ DuckDB::parse_map("MAP {}") }), 0, "parse_map: empty map → empty hash"
+assert_eq scalar(keys %{ DuckDB::parse_map("{'k': '1'}") }), 1, "parse_map: MAP keyword is optional"
+val $pmbare = DuckDB::parse_map("MAP {'n': 5, 'z': null}")
+assert_eq $pmbare->{n}, 5,                         "parse_map: bare number value"
+assert_eq defined($pmbare->{z}), 0,               "parse_map: bare null → undef"
+assert_dies fn { DuckDB::parse_map("(x)") },      "parse_map: rejects a non-{...} wrapper"
+assert_dies fn { DuckDB::parse_map("MAP {'a': 'unterminated}") }, "parse_map: rejects an unterminated quote"
+
 # cleanup
 unlink $pq if -e $pq
 

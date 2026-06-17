@@ -741,8 +741,8 @@ fn DuckDB::format_map ($pairs) {
 ## Parse the "'k': v, 'k2': v2" body of a brace literal into a hashref. Keys are
 ## single-quoted (unquote_literal'd); a value is unquote_literal'd when quoted, or
 ## taken bare and classified as undef (NULL), a number, or text otherwise. Shared
-## by parse_struct (and any future parse_map). Quote-aware: commas and colons
-## inside '...' do not split.
+## by parse_struct and parse_map. Quote-aware: commas and colons inside '...' do
+## not split.
 fn DuckDB::_parse_brace_pairs ($inner, $name, $orig) {
     var %out
     var $trimmed = $inner =~ s/^\s+|\s+$//gr
@@ -810,6 +810,20 @@ fn DuckDB::parse_struct ($struct) {
     var $t = $struct =~ s/^\s+|\s+$//gr
     die "DuckDB::parse_struct: not a STRUCT literal (expected {...}): $struct" unless length($t) >= 2 && substr($t, 0, 1) eq "{" && substr($t, length($t) - 1, 1) eq "}"
     DuckDB::_parse_brace_pairs(substr($t, 1, length($t) - 2), "DuckDB::parse_struct", $struct)
+}
+
+## Parse a DuckDB MAP literal "MAP {'a': '1', 'b': '2'}" back into a hashref —
+## the inverse of format_map. The leading MAP keyword is optional (format_map
+## always emits it, so this round-trips it); keys and quoted values are
+## unquote_literal'd; a bare value is read as undef (NULL), a number, or text.
+## Quote-aware splitting, so a comma or colon inside '...' stays in its field. An
+## empty "MAP {}" yields {}. Shares _parse_brace_pairs with parse_struct.
+fn DuckDB::parse_map ($map) {
+    die "DuckDB::parse_map: input must be a string" if ref($map)
+    var $t = $map =~ s/^\s+|\s+$//gr
+    $t =~ s/^MAP\s*//i
+    die "DuckDB::parse_map: not a MAP literal (expected MAP {...}): $map" unless length($t) >= 2 && substr($t, 0, 1) eq "{" && substr($t, length($t) - 1, 1) eq "}"
+    DuckDB::_parse_brace_pairs(substr($t, 1, length($t) - 2), "DuckDB::parse_map", $map)
 }
 
 ## DESCRIBE $table → rows of { column_name, column_type, null, key, default, extra }.

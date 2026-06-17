@@ -218,6 +218,7 @@ DuckDB::parse_in_list $operand → \@values         # (1, 'a', NULL) → [1,"a",
 DuckDB::format_struct \%fields → $literal         # {a=>1,b=>2} → {'a': '1', 'b': '2'} (DuckDB STRUCT literal, keys sorted)
 DuckDB::parse_struct $literal → \%fields          # {'a': '1', 'b': 'x'} → {a=>"1",b=>"x"}; inverse of format_struct (quote-aware, bare null/number, '' un-doubles)
 DuckDB::format_map \%pairs → $literal             # {a=>1,b=>2} → MAP {'a': '1', 'b': '2'} (DuckDB MAP literal, keys sorted)
+DuckDB::parse_map $literal → \%pairs              # MAP {'a': '1', 'b': 'x'} → {a=>"1",b=>"x"}; inverse of format_map (MAP keyword optional, quote-aware, bare null/number)
 ```
 
 `appender` is DuckDB's native bulk-ingest path — no SQL parse per row — and is
