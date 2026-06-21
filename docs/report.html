@@ -101,6 +101,10 @@
         <div class="stat-card"><div class="stat-val cyan">opt-in</div><div class="stat-label">Tier</div></div>
         <div class="stat-card"><div class="stat-val cyan">dlopen</div><div class="stat-label">Load model</div></div>
         <div class="stat-card"><div class="stat-val">JSON-over-FFI</div><div class="stat-label">Envelope</div></div>
+        <div class="stat-card"><div class="stat-val green">91</div><div class="stat-label">Public DuckDB:: fns</div></div>
+        <div class="stat-card"><div class="stat-val green">34</div><div class="stat-label">FFI exports (duckdb__*)</div></div>
+        <div class="stat-card"><div class="stat-val">v0.19.0</div><div class="stat-label">Package version</div></div>
+        <div class="stat-card"><div class="stat-val">MIT</div><div class="stat-label">License</div></div>
       </div>
 
       <hr class="section-rule">
@@ -133,6 +137,58 @@
 # response shape
 {"result": ...}            # success — per-fn shape
 {"error": "&lt;msg&gt;"}        # failure — wrapper die()s with the message</pre>
+      <p>Per-verb success shapes returned by the cdylib (the <code>.stk</code> wrapper unwraps each into the stryke-native type):</p>
+      <table class="arch-table">
+        <thead><tr><th>Verb</th><th>Wire shape</th></tr></thead>
+        <tbody>
+          <tr><td><code>query</code>, <code>dump</code></td><td><code>{"columns": [...], "rows": [{col: val, ...}, ...]}</code></td></tr>
+          <tr><td><code>execute</code></td><td><code>{"affected": &lt;n&gt;}</code></td></tr>
+          <tr><td><code>exec</code></td><td><code>{"ok": true}</code></td></tr>
+          <tr><td><code>import</code></td><td><code>{"table": ..., "rows": &lt;n&gt;}</code></td></tr>
+          <tr><td><code>export</code></td><td><code>{"path": ..., "kind": ...}</code></td></tr>
+          <tr><td><code>tables</code></td><td><code>{"tables": [...]}</code></td></tr>
+          <tr><td><code>schema</code></td><td><code>{"table": ..., "columns": [{name, type, nullable}, ...]}</code></td></tr>
+          <tr><td><code>attach</code></td><td><code>{"alias": ..., "attach_path": ..., "read_only": &lt;bool&gt;}</code></td></tr>
+          <tr><td><code>detach</code></td><td><code>{"alias": ..., "detached": true}</code></td></tr>
+          <tr><td><code>copy_from</code></td><td><code>{"table": ..., "path": ..., "copied": &lt;n&gt;}</code></td></tr>
+          <tr><td><code>create_index</code></td><td><code>{"index": ..., "table": ..., "columns": [...]}</code></td></tr>
+          <tr><td><code>drop</code></td><td><code>{"dropped": ..., "kind": ...}</code></td></tr>
+          <tr><td><code>appender_columns</code></td><td><code>{"table": ..., "columns": [...], "appended": &lt;n&gt;}</code></td></tr>
+          <tr><td><code>indexes</code>, <code>constraints</code>, <code>table_info</code>, <code>database_size</code>, <code>columns</code>, <code>schemas</code>, <code>memory</code>, <code>describe_query</code></td><td><code>{"columns": [...], "rows": [...]}</code></td></tr>
+          <tr><td><code>checkpoint</code></td><td><code>{"ok": true, "force": &lt;bool&gt;}</code></td></tr>
+          <tr><td><code>inspect</code>, <code>ping</code></td><td><code>{...}</code></td></tr>
+          <tr><td>any error</td><td><code>{"error": "&lt;msg&gt;"}</code> &mdash; the wrapper <code>die</code>s with it</td></tr>
+        </tbody>
+      </table>
+
+      <hr class="section-rule">
+      <h2 class="tutorial-title"><span class="step-hash">+</span>SURFACE INVENTORY</h2>
+      <p>The package exposes <strong>91 public <code>DuckDB::*</code> functions</strong> from <code>lib/DuckDB.stk</code>. Of these, <strong>34 cross the FFI boundary</strong> to a <code>duckdb__*</code> symbol in the cdylib; the remainder are pure-stryke helpers composed over <code>query</code> / <code>execute</code> (CRUD, analytics, quote/parse). The cdylib's <code>extern "C"</code> exports are declared in <code>stryke.toml</code> under <code>[ffi].exports</code> and matched by <code>extern "C" fn duckdb__&lt;verb&gt;</code> definitions in <code>src/lib.rs</code>.</p>
+      <table class="arch-table">
+        <thead><tr><th>Category</th><th>Surface</th></tr></thead>
+        <tbody>
+          <tr><td>Read paths</td><td><code>query</code>, <code>query_stream</code>, <code>query_one</code>, <code>query_col</code>, <code>query_scalar</code>, <code>dump</code></td></tr>
+          <tr><td>DDL / DML</td><td><code>execute</code>, <code>exec_file</code>, <code>explain</code>, <code>insert_many</code>, <code>appender</code>, <code>appender_columns</code>, <code>import</code>, <code>export</code>, <code>copy_from</code>, <code>create_index</code>, <code>drop</code>, <code>drop_index</code>, <code>attach</code>, <code>detach</code>, <code>update</code>, <code>delete</code>, <code>truncate</code>, <code>upsert</code></td></tr>
+          <tr><td>Transactions</td><td><code>begin</code>, <code>commit</code>, <code>rollback</code>, <code>transaction</code></td></tr>
+          <tr><td>Metadata</td><td><code>version</code>, <code>server_version</code>, <code>ping</code>, <code>inspect</code>, <code>tables</code>, <code>databases</code>, <code>views</code>, <code>functions</code>, <code>settings</code>, <code>extensions</code>, <code>schema</code>, <code>count</code>, <code>exists</code>, <code>table_exists</code>, <code>table_info</code>, <code>indexes</code>, <code>constraints</code>, <code>database_size</code>, <code>all_columns</code>, <code>schemas</code>, <code>memory_usage</code>, <code>describe_query</code></td></tr>
+          <tr><td>Analytics &amp; readers</td><td><code>describe</code>, <code>columns</code>, <code>column_types</code>, <code>summarize</code>, <code>head</code>, <code>sample</code>, <code>distinct</code>, <code>aggregate</code>, <code>sum_</code>, <code>avg_</code>, <code>min_</code>, <code>max_</code>, <code>group_count</code>, <code>create_table_as</code>, <code>read_parquet</code>, <code>read_csv</code>, <code>read_json</code>, <code>copy_to</code>, <code>install_extension</code>, <code>load_extension</code>, <code>pragma</code>, <code>set</code>, <code>get_setting</code>, <code>vacuum</code>, <code>checkpoint</code></td></tr>
+          <tr><td>Quote / parse (pure)</td><td><code>quote_ident</code>, <code>unquote_ident</code>, <code>quote_identifier</code>, <code>quote_literal</code>, <code>unquote_literal</code>, <code>quote_like</code>, <code>unquote_like</code>, <code>quote_qualified_ident</code>, <code>parse_qualified_ident</code>, <code>format_list</code>, <code>parse_list</code>, <code>format_in_list</code>, <code>parse_in_list</code>, <code>format_struct</code>, <code>parse_struct</code>, <code>format_map</code></td></tr>
+        </tbody>
+      </table>
+      <p>The full per-function signature listing (return shapes, option keys) is in the <a href="index.html#api-reference">Docs API reference</a> and the README's <a href="https://github.com/MenkeTechnologies/stryke-duckdb#0x04-api-reference">API reference section</a>.</p>
+
+      <hr class="section-rule">
+      <h2 class="tutorial-title"><span class="step-hash">=</span>CONNECTION CACHE</h2>
+      <p>The cdylib caches one <code>duckdb::Connection</code> keyed on the <code>(db, session, read_only)</code> tuple in a <code>OnceCell&lt;Mutex&lt;HashMap&gt;&gt;</code> that lives for the life of the stryke process. Two consequences:</p>
+      <ul>
+        <li><code>:memory:</code> databases <strong>persist across calls</strong> within a session &mdash; the v1 helper binary got a fresh empty <code>:memory:</code> on every fork; the in-process cdylib does not.</li>
+        <li>Statements issued with the same <code>%opts</code> ride the same handle, so <code>begin</code> / <code>commit</code> / <code>rollback</code> / <code>transaction</code> work without extra FFI bookkeeping &mdash; connection affinity is implicit in the cache key.</li>
+      </ul>
+      <p>Named sessions (<code>session =&gt; "name"</code>) give distinct in-memory instances; the default session name is <code>"_default"</code>. A file-backed <code>db =&gt; "app.duckdb"</code> shares its cached connection across every call with that same path.</p>
+
+      <hr class="section-rule">
+      <h2 class="tutorial-title"><span class="step-hash">%</span>CI GATES</h2>
+      <p>GitHub Actions <code>.github/workflows/ci.yml</code> runs: <code>cargo check</code> / <code>fmt --check</code> / <code>clippy -D warnings</code> / <code>test</code> (ubuntu + macOS), <code>cargo doc -D warnings</code>, a cross-target release build (linux x86_64, macOS x86_64 + aarch64), and a <code>stryke-test</code> job that downloads the latest strykelang release, syntax-checks every <code>.stk</code> file, installs the package, and runs <code>s test t/</code>. Documentation is pinned by shell gates under <code>tests/</code> (docs HTML structure, <code>target=_blank</code>/<code>rel=noopener</code>, no inline handlers, no <code>http://</code> links, no placeholder hrefs, final-newline, README/man-page structure).</p>
 
       <hr class="section-rule">
       <h2 class="tutorial-title"><span class="step-hash">/</span>SCOPE</h2>
