@@ -128,7 +128,7 @@ DuckDB::export "events", "events.zstd.parquet",
 # Stream large results without buffering on the stryke side.
 DuckDB::query_stream "SELECT * FROM events",
     db => "app.duckdb",
-    callback => fn ($row) { process $row }
+    callback => fn { process _ }
 ```
 
 ## [0x03] Connection options
