@@ -312,7 +312,17 @@ DuckDB::table_info     $table, %opts → @{ {cid, name, type, notnull, dflt_valu
 DuckDB::indexes        %opts → @{ {index_name, table_name, schema_name, is_unique, sql} }       # duckdb_indexes()
 DuckDB::constraints    %opts → @{ {schema_name, table_name, constraint_type, constraint_text} } # duckdb_constraints()
 DuckDB::database_size  %opts → @{ storage stats }   # PRAGMA database_size (block/wal/db sizes)
+DuckDB::all_columns    %opts → @{ {database_name, schema_name, table_name, column_name, column_index, data_type, is_nullable, column_default} }  # duckdb_columns() — catalog-wide
+DuckDB::schemas        %opts → @{ {database_name, schema_name, internal} }   # duckdb_schemas()
+DuckDB::memory_usage   %opts → @{ {tag, memory_usage_bytes, temporary_storage_bytes} }  # duckdb_memory() runtime usage
+DuckDB::describe_query $sql, %opts → @{ {column_name, column_type, null, …} }   # DESCRIBE <query> — result schema, no execution
 ```
+
+`all_columns` is the catalog-wide column listing (every schema), where
+`schema` covers one table in the current schema and `table_info` is the
+engine PRAGMA for one table. `describe_query` resolves the result schema of an
+arbitrary query without running it — the read-shaped counterpart to `explain`.
+`memory_usage` is the runtime-memory companion to `database_size` (on-disk).
 
 `exists` uses SQL `EXISTS`, which stops at the first matching row — prefer
 it over `count(…) > 0` when you only need a yes/no. The table name and
@@ -343,6 +353,10 @@ DuckDB::read_json       $path, %opts → @rows                       # read_json
 DuckDB::copy_to         $query, $path, %opts → result              # COPY (…) TO; opts: format
 DuckDB::install_extension / load_extension   $name, %opts → 1      # INSTALL / LOAD
 DuckDB::pragma          $name, %opts → @rows
+DuckDB::set             $name, $value, %opts → 1                   # SET name = value (name validated, value bound as literal)
+DuckDB::get_setting     $name, %opts → $value                     # current_setting($name) scalar read
+DuckDB::vacuum          %opts → 1                                 # VACUUM; opts: analyze => 1 for VACUUM ANALYZE
+DuckDB::checkpoint      %opts → { ok, force }                     # CHECKPOINT; opts: force => 1 for FORCE CHECKPOINT
 ```
 
 ### Multi-database & DDL
@@ -406,7 +420,8 @@ Wire shape (cdylib responses):
 * `create_index` → `{"index": ..., "table": ..., "columns": [...]}`
 * `drop` → `{"dropped": ..., "kind": ...}`
 * `appender_columns` → `{"table": ..., "columns": [...], "appended": <n>}`
-* `indexes`, `constraints`, `table_info`, `database_size` → `{"columns": [...], "rows": [...]}`
+* `indexes`, `constraints`, `table_info`, `database_size`, `columns`, `schemas`, `memory`, `describe_query` → `{"columns": [...], "rows": [...]}`
+* `checkpoint` → `{"ok": true, "force": <bool>}`
 * `inspect`, `ping` → `{...}`
 * Errors → `{"error": "<msg>"}` — the wrapper `die`s with it
 

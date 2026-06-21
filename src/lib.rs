@@ -978,6 +978,98 @@ pub extern "C" fn duckdb__appender_columns(args: *const c_char) -> *const c_char
     })
 }
 
+/// List every column across all schemas via `duckdb_columns()` — one row per
+/// column with its database, schema, table, name, ordinal position, declared
+/// type, nullability, and default expression. The catalog-wide companion to
+/// `schema` (single table, current schema only) and `table_info` (PRAGMA, one
+/// table). No identifier interpolation — pure catalog scan.
+#[no_mangle]
+pub extern "C" fn duckdb__columns(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        with_conn(&v, |c| {
+            run_query(
+                c,
+                "SELECT database_name, schema_name, table_name, column_name, \
+                 column_index, data_type, is_nullable, column_default \
+                 FROM duckdb_columns() \
+                 ORDER BY database_name, schema_name, table_name, column_index",
+                &[],
+            )
+        })
+    })
+}
+
+/// List schemas via `duckdb_schemas()` — one row per schema with its database,
+/// name, oid, and internal flag (system schemas such as `information_schema`
+/// and `pg_catalog` carry `internal = true`). Complements `tables`/`views`,
+/// which scope to the current schema only.
+#[no_mangle]
+pub extern "C" fn duckdb__schemas(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        with_conn(&v, |c| {
+            run_query(
+                c,
+                "SELECT database_name, schema_name, internal \
+                 FROM duckdb_schemas() ORDER BY database_name, schema_name",
+                &[],
+            )
+        })
+    })
+}
+
+/// Per-component memory usage via `duckdb_memory()` — one row per tag (e.g.
+/// `BASE_TABLE`, `HASH_TABLE`, `COLUMN_DATA`) with its current `memory_usage`
+/// and `temporary_storage` byte counts. The runtime-memory companion to
+/// `database_size` (on-disk storage stats).
+#[no_mangle]
+pub extern "C" fn duckdb__memory(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        with_conn(&v, |c| {
+            run_query(
+                c,
+                "SELECT tag, memory_usage_bytes, temporary_storage_bytes \
+                 FROM duckdb_memory() ORDER BY tag",
+                &[],
+            )
+        })
+    })
+}
+
+/// Flush the write-ahead log into the main database file via `CHECKPOINT`.
+/// `force => true` issues `FORCE CHECKPOINT`, which aborts in-flight
+/// transactions to checkpoint immediately. A no-op on `:memory:` databases
+/// (nothing to flush) — returns ok regardless.
+#[no_mangle]
+pub extern "C" fn duckdb__checkpoint(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let force = v["force"].as_bool().unwrap_or(false);
+        let sql = if force {
+            "FORCE CHECKPOINT"
+        } else {
+            "CHECKPOINT"
+        };
+        with_conn(&v, |c| {
+            c.execute_batch(sql)?;
+            Ok(json!({"ok": true, "force": force}))
+        })
+    })
+}
+
+/// Resolve the column names and types of an arbitrary query WITHOUT executing
+/// it, via `DESCRIBE <sql>` — DuckDB binds and type-checks the statement and
+/// reports its result schema. Returns `{columns, rows}` where each row carries
+/// `column_name`, `column_type`, `null`, and the other DESCRIBE fields. `sql`
+/// is interpolated after the DESCRIBE keyword; DuckDB only binds it, so this is
+/// the read-shaped counterpart to `explain`.
+#[no_mangle]
+pub extern "C" fn duckdb__describe_query(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let sql = v["sql"].as_str().ok_or_else(|| anyhow!("missing sql"))?;
+        let describe_sql = format!("DESCRIBE {sql}");
+        with_conn(&v, |c| run_query(c, &describe_sql, &[]))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1959,6 +2051,158 @@ mod tests {
         assert!(
             e["error"].as_str().unwrap().contains("values but"),
             "row/column arity mismatch must error; got {e}"
+        );
+    }
+
+    // ── new catalog / runtime introspection ops ──────────────────────────
+
+    /// duckdb_columns() must surface a created table's columns catalog-wide,
+    /// including the declared type — proving the SQL binds against the bundled
+    /// engine and the column set we project actually exists.
+    #[test]
+    fn columns_lists_created_table_columns() {
+        let sess = json!({"path": ":memory:", "session": "test-columns-catalog"});
+        with_conn(&sess, |c| {
+            c.execute_batch("CREATE OR REPLACE TABLE cat_t(id INTEGER, label VARCHAR)")?;
+            Ok(())
+        })
+        .unwrap();
+        let r = call_export(duckdb__columns, &sess);
+        let rows = r["rows"].as_array().expect("columns rows");
+        let mine: Vec<&Value> = rows
+            .iter()
+            .filter(|row| row["table_name"] == json!("cat_t"))
+            .collect();
+        assert_eq!(mine.len(), 2, "both columns listed catalog-wide; got {r}");
+        let id = mine
+            .iter()
+            .find(|row| row["column_name"] == json!("id"))
+            .expect("id column present in catalog");
+        assert_eq!(
+            id["data_type"],
+            json!("INTEGER"),
+            "duckdb_columns must report the declared type; got {id}"
+        );
+    }
+
+    /// duckdb_schemas() must include the always-present `main` schema and flag
+    /// at least one internal (system) schema — pins the projected column set.
+    #[test]
+    fn schemas_lists_main_and_flags_internal() {
+        let sess = json!({"path": ":memory:", "session": "test-schemas-catalog"});
+        let r = call_export(duckdb__schemas, &sess);
+        let rows = r["rows"].as_array().expect("schemas rows");
+        let names: Vec<String> = rows
+            .iter()
+            .filter_map(|row| row["schema_name"].as_str().map(|s| s.to_string()))
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "main"),
+            "the main schema must be listed; got {names:?}"
+        );
+        let has_internal = rows.iter().any(|row| {
+            let v = &row["internal"];
+            v == &json!(true) || v.as_i64() == Some(1)
+        });
+        assert!(
+            has_internal,
+            "at least one system schema must carry internal=true; got {r}"
+        );
+    }
+
+    /// duckdb_memory() must return at least one tagged usage row with a byte
+    /// count — pins that the projected `memory_usage_bytes` column name is the
+    /// one the bundled engine emits.
+    #[test]
+    fn memory_reports_tagged_usage_rows() {
+        let sess = json!({"path": ":memory:", "session": "test-memory-usage"});
+        let r = call_export(duckdb__memory, &sess);
+        let rows = r["rows"].as_array().expect("memory rows");
+        assert!(!rows.is_empty(), "duckdb_memory returns rows; got {r}");
+        // Every row must expose the projected fields by name.
+        for row in rows {
+            assert!(
+                row.get("tag").is_some() && row.get("memory_usage_bytes").is_some(),
+                "memory row must carry tag + memory_usage_bytes; got {row}"
+            );
+        }
+    }
+
+    /// CHECKPOINT against a real file-backed db must succeed and persist data
+    /// (the row survives a checkpoint). force=true must also succeed.
+    #[test]
+    fn checkpoint_flushes_file_backed_db() {
+        let dir = std::env::temp_dir();
+        let file = dir.join(format!("stryke-duckdb-ckpt-{}.duckdb", std::process::id()));
+        let file_s = file.to_str().unwrap().to_string();
+        let _ = std::fs::remove_file(&file);
+        let sess = json!({"path": file_s, "session": "test-checkpoint"});
+        with_conn(&sess, |c| {
+            c.execute_batch("CREATE OR REPLACE TABLE ck(n INTEGER)")?;
+            c.execute_batch("INSERT INTO ck VALUES (1),(2)")?;
+            Ok(())
+        })
+        .unwrap();
+
+        let r = call_export(duckdb__checkpoint, &sess);
+        assert_eq!(r["ok"], json!(true), "checkpoint reports ok; got {r}");
+        let f = call_export(
+            duckdb__checkpoint,
+            &json!({"path": &sess["path"], "session": "test-checkpoint", "force": true}),
+        );
+        assert_eq!(
+            f["force"],
+            json!(true),
+            "force checkpoint echoes force flag; got {f}"
+        );
+        let n = with_conn(&sess, |c| {
+            let mut s = c.prepare("SELECT count(*) FROM ck")?;
+            let mut rows = s.query([])?;
+            Ok(rows.next()?.unwrap().get::<_, i64>(0)?)
+        })
+        .unwrap();
+        assert_eq!(n, 2, "rows survive the checkpoint");
+
+        let _ = std::fs::remove_file(&file);
+        let _ = std::fs::remove_file(format!("{file_s}.wal"));
+    }
+
+    /// DESCRIBE <query> must report the result schema of an arbitrary SELECT
+    /// without executing it — the column name and type are visible, and no row
+    /// from the underlying expression is materialized.
+    #[test]
+    fn describe_query_reports_result_schema_without_running() {
+        let sess = json!({"path": ":memory:", "session": "test-describe-query"});
+        let mut dq = sess.clone();
+        dq["sql"] = json!("SELECT 1::INTEGER AS a, 'x'::VARCHAR AS b");
+        let r = call_export(duckdb__describe_query, &dq);
+        let rows = r["rows"].as_array().expect("describe rows");
+        let names: Vec<String> = rows
+            .iter()
+            .filter_map(|row| row["column_name"].as_str().map(|s| s.to_string()))
+            .collect();
+        assert_eq!(
+            names,
+            vec!["a".to_string(), "b".to_string()],
+            "describe_query lists both result columns in order; got {r}"
+        );
+        let a = rows
+            .iter()
+            .find(|row| row["column_name"] == json!("a"))
+            .expect("column a present");
+        assert_eq!(
+            a["column_type"],
+            json!("INTEGER"),
+            "describe_query reports the column's resolved type; got {a}"
+        );
+
+        // A syntactically invalid query surfaces as an error envelope, not a panic.
+        let mut bad = sess.clone();
+        bad["sql"] = json!("SELECT FROM");
+        let e = call_export(duckdb__describe_query, &bad);
+        assert!(
+            e.get("error").is_some(),
+            "invalid query must return an error envelope; got {e}"
         );
     }
 }

@@ -1,0 +1,63 @@
+## t/test_introspection.stk — assertion tests for the catalog / runtime
+## introspection + config surface added in v0.20.0:
+##   all_columns / schemas / memory_usage / checkpoint / describe_query
+##   set / get_setting / vacuum
+##
+## Uses stryke's native test framework (`assert_*` + `test_run`). Self-
+## contained — DuckDB embeds; no external service beyond the loaded cdylib
+## (install once with `s pkg install -g .`). Connection opts route through a
+## named `session =>` like the rest of the suite.
+
+use DuckDB
+
+val $s = "stryke_duckdb_introspection_$$"
+
+DuckDB::execute("CREATE TABLE widgets (id INT, sku TEXT)", session => $s)
+DuckDB::insert_many("widgets", [
+    { id => 1, sku => "a" },
+    { id => 2, sku => "b" },
+], session => $s)
+
+# ── all_columns: catalog-wide column list ────────────────────────────
+val @allcols = DuckDB::all_columns(session => $s)
+val @mine = grep { $_->{table_name} eq "widgets" } @allcols
+assert_eq scalar(@mine), 2, "all_columns: widgets has 2 columns catalog-wide"
+val ($idcol) = grep { $_->{column_name} eq "id" } @mine
+assert_match qr/(?i)int/, $idcol->{data_type}, "all_columns: id reports an integer type"
+assert_ok exists $idcol->{schema_name}, "all_columns: rows carry schema_name"
+
+# ── schemas: includes main, flags internal ───────────────────────────
+val @schemas = DuckDB::schemas(session => $s)
+assert_ok scalar(grep { $_->{schema_name} eq "main" } @schemas), "schemas: main present"
+assert_ok scalar(grep { $_->{internal} } @schemas), "schemas: at least one internal schema"
+
+# ── memory_usage: tagged byte counts ─────────────────────────────────
+val @mem = DuckDB::memory_usage(session => $s)
+assert_ok scalar(@mem) >= 1, "memory_usage: at least one tagged row"
+assert_ok exists $mem[0]->{tag}, "memory_usage: rows carry a tag"
+assert_ok exists $mem[0]->{memory_usage_bytes}, "memory_usage: rows carry memory_usage_bytes"
+
+# ── describe_query: result schema without executing ──────────────────
+val @dq = DuckDB::describe_query("SELECT 1::INTEGER AS a, 'x'::VARCHAR AS b", session => $s)
+assert_eq scalar(@dq), 2, "describe_query: two result columns"
+val @dqnames = map { $_->{column_name} } @dq
+assert_eq $dqnames[0], "a", "describe_query: first column name"
+assert_eq $dqnames[1], "b", "describe_query: second column name"
+val ($acol) = grep { $_->{column_name} eq "a" } @dq
+assert_match qr/(?i)int/, $acol->{column_type}, "describe_query: column a resolved type"
+
+# ── set / get_setting: round-trip a session config option ────────────
+DuckDB::set("threads", 3, session => $s)
+assert_eq DuckDB::get_setting("threads", session => $s) + 0, 3, "set/get_setting: threads round-trips"
+DuckDB::set("memory_limit", "1.5GiB", session => $s)
+assert_match qr/1\.5/, DuckDB::get_setting("memory_limit", session => $s), "set/get_setting: memory_limit string round-trips"
+
+# ── checkpoint: no-op success on :memory: ────────────────────────────
+val $ck = DuckDB::checkpoint(session => $s)
+assert_ok $ck->{ok}, "checkpoint: reports ok on :memory:"
+
+# ── vacuum: completes against the session db ─────────────────────────
+assert_eq DuckDB::vacuum(session => $s), 1, "vacuum: returns 1"
+assert_eq DuckDB::vacuum(analyze => 1, session => $s), 1, "vacuum analyze: returns 1"
+
+test_run

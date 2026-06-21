@@ -39,6 +39,11 @@ exports = [
     "duckdb__table_info",
     "duckdb__database_size",
     "duckdb__appender_columns",
+    "duckdb__columns",
+    "duckdb__schemas",
+    "duckdb__memory",
+    "duckdb__checkpoint",
+    "duckdb__describe_query",
 ]
 
 [scripts]

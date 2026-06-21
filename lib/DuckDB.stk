@@ -565,6 +565,45 @@ fn DuckDB::database_size (%opts) {
     @{ DuckDB::_decode("database_size", duckdb__database_size(to_json(DuckDB::_req({}, \%opts))))->{rows} }
 }
 
+## List every column across all schemas via duckdb_columns(): rows of
+## { database_name, schema_name, table_name, column_name, column_index,
+## data_type, is_nullable, column_default }. The catalog-wide companion to
+## schema (single table, current schema) and table_info (one table, PRAGMA).
+fn DuckDB::all_columns (%opts) {
+    @{ DuckDB::_decode("columns", duckdb__columns(to_json(DuckDB::_req({}, \%opts))))->{rows} }
+}
+
+## List schemas via duckdb_schemas(): rows of { database_name, schema_name,
+## internal }. System schemas (information_schema, pg_catalog) carry
+## internal => true. Complements tables/views (current schema only).
+fn DuckDB::schemas (%opts) {
+    @{ DuckDB::_decode("schemas", duckdb__schemas(to_json(DuckDB::_req({}, \%opts))))->{rows} }
+}
+
+## Per-component memory usage via duckdb_memory(): rows of
+## { tag, memory_usage_bytes, temporary_storage_bytes }. The runtime-memory
+## companion to database_size (on-disk storage stats).
+fn DuckDB::memory_usage (%opts) {
+    @{ DuckDB::_decode("memory", duckdb__memory(to_json(DuckDB::_req({}, \%opts))))->{rows} }
+}
+
+## Flush the write-ahead log into the main database file (CHECKPOINT).
+## %opts: force => 1 issues FORCE CHECKPOINT (aborts in-flight transactions to
+## checkpoint immediately). A no-op on :memory: dbs. Returns { ok, force }.
+fn DuckDB::checkpoint (%opts) {
+    val $r = DuckDB::_req({ force => ($opts{force} ? \1 : \0) }, \%opts)
+    DuckDB::_decode("checkpoint", duckdb__checkpoint(to_json($r)))
+}
+
+## Resolve the result column names and types of $sql WITHOUT executing it,
+## via DESCRIBE <query>. Returns rows of { column_name, column_type, null, … }
+## — the read-shaped counterpart to explain. The engine only binds the query;
+## no underlying rows are materialized.
+fn DuckDB::describe_query ($sql, %opts) {
+    val $r = DuckDB::_req({ sql => $sql }, \%opts)
+    @{ DuckDB::_decode("describe_query", duckdb__describe_query(to_json($r)))->{rows} }
+}
+
 # ── column-subset native bulk load ────────────────────────────────────
 
 ## Bulk-load rows into a SUBSET of $table's columns via DuckDB's native
@@ -1077,4 +1116,32 @@ fn DuckDB::load_extension ($name, %opts) {
 fn DuckDB::pragma ($name, %opts) {
     DuckDB::_ident($name, "pragma")
     DuckDB::query("PRAGMA $name", DuckDB::_conn(\%opts))
+}
+
+## SET a session configuration option ($name = $value), e.g.
+## DuckDB::set("threads", 4) or DuckDB::set("memory_limit", "2GB"). $name is
+## identifier-validated; $value is bound as a SQL literal (number bare, string
+## single-quoted) via quote_literal. Returns 1. The setter companion to
+## get_setting; persists on the cached connection for the session.
+fn DuckDB::set ($name, $value, %opts) {
+    DuckDB::_ident($name, "setting")
+    DuckDB::execute("SET $name = " . DuckDB::quote_literal($value), DuckDB::_conn(\%opts))
+    1
+}
+
+## Read the current value of a single configuration option via
+## current_setting($name) — the scalar getter companion to set and the
+## per-row settings() list. $name is bound as a parameter. Returns the value
+## (string) or undef if the option is unknown.
+fn DuckDB::get_setting ($name, %opts) {
+    DuckDB::query_scalar("SELECT current_setting(?) AS v", bind => [$name], DuckDB::_conn(\%opts))
+}
+
+## VACUUM the database to reclaim space and update statistics. %opts:
+## analyze => 1 issues VACUUM ANALYZE (also refreshes the optimizer's column
+## statistics). Returns 1.
+fn DuckDB::vacuum (%opts) {
+    val $stmt = $opts{analyze} ? "VACUUM ANALYZE" : "VACUUM"
+    DuckDB::execute($stmt, DuckDB::_conn(\%opts))
+    1
 }
