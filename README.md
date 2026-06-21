@@ -94,15 +94,15 @@ use DuckDB
 p DuckDB::query "SELECT 1 + 1 AS two, 'hi' AS s"
 
 # Query a parquet file directly — no table to create.
-my @rows = DuckDB::query "SELECT id, name FROM 'events.parquet' LIMIT 10"
+val @rows = DuckDB::query "SELECT id, name FROM 'events.parquet' LIMIT 10"
 @rows |> ep
 
 # Aggregate a CSV.
-my $count = DuckDB::query_scalar
+val $count = DuckDB::query_scalar
     "SELECT COUNT(*) FROM read_csv_auto('orders.csv') WHERE total > 100"
 
 # Hit remote files (requires httpfs extension; load it on connect).
-my @rows = DuckDB::query
+val @rows = DuckDB::query
     "SELECT * FROM 'https://example.com/data.parquet' LIMIT 5",
     extensions => ["httpfs"]
 
@@ -114,7 +114,7 @@ DuckDB::execute "INSERT INTO users VALUES (?, ?, ?)",
                 db => "app.duckdb"
 
 # Bulk load a parquet into a table.
-my $r = DuckDB::import "events.parquet", "events",
+val $r = DuckDB::import "events.parquet", "events",
                        db => "app.duckdb",
                        replace => 1
 p "loaded $r->{num_rows} rows"
@@ -128,7 +128,7 @@ DuckDB::export "events", "events.zstd.parquet",
 # Stream large results without buffering on the stryke side.
 DuckDB::query_stream "SELECT * FROM events",
     db => "app.duckdb",
-    callback => sub ($row) { process $row }
+    callback => fn ($row) { process $row }
 ```
 
 ## [0x03] Connection options
@@ -271,7 +271,7 @@ are bound.
 DuckDB::upsert "kv", { id => 1, name => "a", hits => 1 }, conflict => ["id"]
 DuckDB::upsert "kv", { id => 1, name => "x", hits => 9 },
                conflict => ["id"], update => ["hits"]   # only bump hits
-my @r = DuckDB::upsert "kv", { id => 2, name => "b" },
+val @r = DuckDB::upsert "kv", { id => 2, name => "b" },
                        conflict => ["id"], returning => "*"
 ```
 
