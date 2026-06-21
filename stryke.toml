@@ -29,6 +29,16 @@ exports = [
     "duckdb__settings",
     "duckdb__extensions",
     "duckdb__quote_identifier",
+    "duckdb__attach",
+    "duckdb__detach",
+    "duckdb__copy_from",
+    "duckdb__create_index",
+    "duckdb__drop",
+    "duckdb__indexes",
+    "duckdb__constraints",
+    "duckdb__table_info",
+    "duckdb__database_size",
+    "duckdb__appender_columns",
 ]
 
 [scripts]

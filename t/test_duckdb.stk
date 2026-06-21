@@ -120,8 +120,70 @@ DuckDB::execute("INSERT INTO qt VALUES (7)", session => $qs)
 assert_eq DuckDB::query_scalar("SELECT " . DuckDB::quote_identifier(q{a"b}) . " FROM qt", session => $qs), 7,
     "quote_identifier: round-trips a weird identifier through the engine"
 
+# ── index DDL + native catalog introspection ────────────────────────
+val $is = "stryke_duckdb_index_$$"
+DuckDB::execute("CREATE TABLE widgets (id INT, sku VARCHAR)", session => $is)
+val $ci = DuckDB::create_index("idx_widgets_sku", "widgets", ["sku"], unique => 1, session => $is)
+assert_eq $ci->{index}, "idx_widgets_sku", "create_index: reports the index name"
+val @idx = DuckDB::indexes(session => $is)
+assert_ok scalar(grep { $_->{index_name} eq "idx_widgets_sku" } @idx), "indexes: lists the new index"
+val $di = DuckDB::drop_index("idx_widgets_sku", session => $is)
+assert_eq $di->{dropped}, "idx_widgets_sku", "drop_index: reports the dropped name"
+val @idx2 = DuckDB::indexes(session => $is)
+assert_ok !scalar(grep { $_->{index_name} eq "idx_widgets_sku" } @idx2), "drop_index: index gone after drop"
+
+# ── table_info (pk flag) + constraints + database_size ───────────────
+val $ts = "stryke_duckdb_tinfo_$$"
+DuckDB::execute("CREATE TABLE ti (id INT PRIMARY KEY, name VARCHAR)", session => $ts)
+val @ti = DuckDB::table_info("ti", session => $ts)
+assert_eq scalar(@ti), 2, "table_info: two columns"
+val ($idcol) = grep { $_->{name} eq "id" } @ti
+assert_ok $idcol->{pk}, "table_info: id column flagged primary key"
+val @cons = DuckDB::constraints(session => $ts)
+assert_ok scalar(grep { $_->{constraint_type} =~ /PRIMARY KEY/ } @cons), "constraints: PRIMARY KEY surfaced"
+val @dsz = DuckDB::database_size(session => $ts)
+assert_ok scalar(@dsz) >= 1, "database_size: at least one stats row"
+
+# ── drop (table) round-trip ──────────────────────────────────────────
+val $ds = "stryke_duckdb_drop_$$"
+DuckDB::execute("CREATE TABLE gone (n INT)", session => $ds)
+assert_ok DuckDB::table_exists("gone", session => $ds), "drop: table exists before drop"
+DuckDB::drop("gone", session => $ds)
+assert_ok !DuckDB::table_exists("gone", session => $ds), "drop: table gone after drop"
+val $dn = DuckDB::drop("never_existed", session => $ds)
+assert_eq $dn->{dropped}, "never_existed", "drop: if_exists default makes a missing-table drop a no-op success"
+
+# ── appender_columns (column subset; unnamed col takes DEFAULT) ──────
+val $as = "stryke_duckdb_appcols_$$"
+DuckDB::execute("CREATE TABLE ac (id INT, note VARCHAR DEFAULT 'def')", session => $as)
+assert_eq DuckDB::appender_columns("ac", ["id"], [[1],[2],[3]], session => $as), 3,
+    "appender_columns: 3 rows appended into the id subset"
+assert_eq DuckDB::query_scalar("SELECT note FROM ac WHERE id = 1", session => $as), "def",
+    "appender_columns: unnamed column took its DEFAULT"
+
+# ── attach / copy_from / detach (file-backed alias round-trip) ───────
+val $attdb = "/tmp/stryke-duckdb-attach-test-$$.duckdb"
+val $attcsv = "/tmp/stryke-duckdb-attach-test-$$.csv"
+unlink $attdb if -e $attdb
+open my $cfh, ">", $attcsv or die "open $attcsv: $!"
+print $cfh "id,label\n1,a\n2,b\n3,c\n"
+close $cfh
+val $ats = "stryke_duckdb_attach_$$"
+val $att = DuckDB::attach($attdb, "ext", session => $ats)
+assert_eq $att->{alias}, "ext", "attach: reports the alias"
+DuckDB::execute("CREATE TABLE ext.loaded (id INT, label VARCHAR)", session => $ats)
+val $cf = DuckDB::copy_from("ext.loaded", $attcsv, kind => "csv", session => $ats)
+assert_eq $cf->{copied}, 3, "copy_from: 3 CSV rows copied into the attached table"
+assert_eq DuckDB::query_scalar("SELECT COUNT(*) FROM ext.loaded", session => $ats), 3,
+    "copy_from: rows visible through the attached alias"
+val $det = DuckDB::detach("ext", session => $ats)
+assert_ok $det->{detached}, "detach: reports success"
+
 # cleanup
 unlink $tmpdb if -e $tmpdb
 unlink "$tmpdb.wal" if -e "$tmpdb.wal"
+unlink $attdb if -e $attdb
+unlink "$attdb.wal" if -e "$attdb.wal"
+unlink $attcsv if -e $attcsv
 
 test_run

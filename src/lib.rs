@@ -673,6 +673,311 @@ pub extern "C" fn duckdb__quote_identifier(args: *const c_char) -> *const c_char
     })
 }
 
+/// ATTACH a database file under an alias so its tables become visible as
+/// `alias.table`. `path` is single-quote escaped (string literal); `alias`
+/// is identifier-validated (it is interpolated as a bare name). `read_only`
+/// adds `(READ_ONLY)`. Idempotent ATTACH is requested via `if_not_exists`,
+/// which adds `IF NOT EXISTS`.
+#[no_mangle]
+pub extern "C" fn duckdb__attach(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let path = v["attach_path"]
+            .as_str()
+            .ok_or_else(|| anyhow!("missing attach_path"))?
+            .to_string();
+        let alias = validate_identifier(
+            v["alias"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing alias"))?,
+            "alias",
+        )?;
+        let read_only = v["attach_read_only"].as_bool().unwrap_or(false);
+        let if_not_exists = v["if_not_exists"].as_bool().unwrap_or(false);
+        let ine = if if_not_exists { "IF NOT EXISTS " } else { "" };
+        let ro = if read_only { " (READ_ONLY)" } else { "" };
+        let sql = format!(
+            "ATTACH {}'{}' AS {}{}",
+            ine,
+            path.replace('\'', "''"),
+            alias,
+            ro
+        );
+        with_conn(&v, |c| {
+            c.execute_batch(&sql)?;
+            Ok(json!({"alias": alias, "attach_path": path, "read_only": read_only}))
+        })
+    })
+}
+
+/// DETACH a previously attached database alias. `alias` is
+/// identifier-validated. `if_exists` adds `IF EXISTS` so detaching an
+/// absent alias is a no-op instead of an error.
+#[no_mangle]
+pub extern "C" fn duckdb__detach(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let alias = validate_identifier(
+            v["alias"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing alias"))?,
+            "alias",
+        )?;
+        let if_exists = v["if_exists"].as_bool().unwrap_or(false);
+        let ie = if if_exists { "IF EXISTS " } else { "" };
+        let sql = format!("DETACH {}{}", ie, alias);
+        with_conn(&v, |c| {
+            c.execute_batch(&sql)?;
+            Ok(json!({"alias": alias, "detached": true}))
+        })
+    })
+}
+
+/// COPY rows FROM a file into an existing table — DuckDB's bulk file
+/// loader. Unlike `import` (which does CREATE TABLE AS), this appends into
+/// a table that already exists. `table` is identifier-validated; `path` is
+/// single-quote escaped. `kind` selects the format (`csv|parquet|json`,
+/// default inferred from the extension by DuckDB when omitted).
+#[no_mangle]
+pub extern "C" fn duckdb__copy_from(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let table = validate_identifier(
+            v["table"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing table"))?,
+            "table",
+        )?;
+        let path = v["file"]
+            .as_str()
+            .ok_or_else(|| anyhow!("missing file"))?
+            .to_string();
+        let kind = v["kind"].as_str().unwrap_or("auto");
+        let fmt = match kind {
+            "csv" => " (FORMAT CSV, HEADER)",
+            "parquet" => " (FORMAT PARQUET)",
+            "json" => " (FORMAT JSON)",
+            "auto" => "",
+            other => {
+                return Err(anyhow!(
+                    "copy_from kind must be csv|parquet|json|auto, got {}",
+                    other
+                ))
+            }
+        };
+        let sql = format!("COPY {} FROM '{}'{}", table, path.replace('\'', "''"), fmt);
+        with_conn(&v, |c| {
+            let n = c.execute(&sql, [])?;
+            Ok(json!({"table": table, "path": path, "copied": n}))
+        })
+    })
+}
+
+/// CREATE INDEX `name` ON `table` (`columns`). All three are
+/// identifier-validated (column list is an array of names). `unique` makes
+/// it `CREATE UNIQUE INDEX`; `if_not_exists` adds `IF NOT EXISTS`.
+#[no_mangle]
+pub extern "C" fn duckdb__create_index(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let name = validate_identifier(
+            v["name"].as_str().ok_or_else(|| anyhow!("missing name"))?,
+            "index",
+        )?;
+        let table = validate_identifier(
+            v["table"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing table"))?,
+            "table",
+        )?;
+        let cols_json = v["columns"]
+            .as_array()
+            .ok_or_else(|| anyhow!("missing columns (array of column names)"))?;
+        if cols_json.is_empty() {
+            bail!("columns must name at least one column");
+        }
+        let mut cols: Vec<String> = Vec::with_capacity(cols_json.len());
+        for c in cols_json {
+            let s = c
+                .as_str()
+                .ok_or_else(|| anyhow!("each column must be a string"))?;
+            cols.push(validate_identifier(s, "column")?);
+        }
+        let unique = if v["unique"].as_bool().unwrap_or(false) {
+            "UNIQUE "
+        } else {
+            ""
+        };
+        let ine = if v["if_not_exists"].as_bool().unwrap_or(false) {
+            "IF NOT EXISTS "
+        } else {
+            ""
+        };
+        let sql = format!(
+            "CREATE {}INDEX {}{} ON {} ({})",
+            unique,
+            ine,
+            name,
+            table,
+            cols.join(", ")
+        );
+        with_conn(&v, |c| {
+            c.execute_batch(&sql)?;
+            Ok(json!({"index": name, "table": table, "columns": cols}))
+        })
+    })
+}
+
+/// DROP an object of `kind` (`table|view|index`) named `name`. `name` is
+/// identifier-validated, `kind` is matched against the allowlist. `cascade`
+/// adds `CASCADE`; `if_exists` (default true) adds `IF EXISTS` so dropping a
+/// missing object is a no-op.
+#[no_mangle]
+pub extern "C" fn duckdb__drop(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let kind = v["kind"].as_str().unwrap_or("table");
+        let keyword = match kind {
+            "table" => "TABLE",
+            "view" => "VIEW",
+            "index" => "INDEX",
+            other => return Err(anyhow!("drop kind must be table|view|index, got {}", other)),
+        };
+        let name = validate_identifier(
+            v["name"].as_str().ok_or_else(|| anyhow!("missing name"))?,
+            "name",
+        )?;
+        let ie = if v["if_exists"].as_bool().unwrap_or(true) {
+            "IF EXISTS "
+        } else {
+            ""
+        };
+        let cascade = if v["cascade"].as_bool().unwrap_or(false) {
+            " CASCADE"
+        } else {
+            ""
+        };
+        let sql = format!("DROP {} {}{}{}", keyword, ie, name, cascade);
+        with_conn(&v, |c| {
+            c.execute_batch(&sql)?;
+            Ok(json!({"dropped": name, "kind": kind}))
+        })
+    })
+}
+
+/// List indexes via `duckdb_indexes()` — one row per index with its name,
+/// table, schema, uniqueness, and the SQL that created it.
+#[no_mangle]
+pub extern "C" fn duckdb__indexes(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        with_conn(&v, |c| {
+            run_query(
+                c,
+                "SELECT index_name, table_name, schema_name, is_unique, sql \
+                 FROM duckdb_indexes() ORDER BY schema_name, table_name, index_name",
+                &[],
+            )
+        })
+    })
+}
+
+/// List table/column constraints via `duckdb_constraints()` — PRIMARY KEY,
+/// UNIQUE, CHECK, NOT NULL, FOREIGN KEY — for the current database.
+#[no_mangle]
+pub extern "C" fn duckdb__constraints(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        with_conn(&v, |c| {
+            run_query(
+                c,
+                "SELECT schema_name, table_name, constraint_type, constraint_text \
+                 FROM duckdb_constraints() \
+                 ORDER BY schema_name, table_name, constraint_type",
+                &[],
+            )
+        })
+    })
+}
+
+/// `PRAGMA table_info('table')` — ordinal, name, type, notnull, default,
+/// and primary-key flag per column. Complements `schema` (information_schema
+/// based) with the engine's native column view including `pk`. `table` is
+/// identifier-validated, then single-quote escaped into the PRAGMA argument.
+#[no_mangle]
+pub extern "C" fn duckdb__table_info(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let table = validate_identifier(
+            v["table"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing table"))?,
+            "table",
+        )?;
+        let sql = format!("PRAGMA table_info('{}')", table.replace('\'', "''"));
+        with_conn(&v, |c| run_query(c, &sql, &[]))
+    })
+}
+
+/// `PRAGMA database_size` — storage stats for the attached databases:
+/// database name, block size/count, used/free blocks, WAL size, and the
+/// total on-disk size. Returns the rows verbatim.
+#[no_mangle]
+pub extern "C" fn duckdb__database_size(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        with_conn(&v, |c| run_query(c, "PRAGMA database_size", &[]))
+    })
+}
+
+/// Bulk-load rows into a SUBSET of a table's columns via DuckDB's native
+/// `Appender` with an explicit column list — the unspecified columns take
+/// their DEFAULT (or NULL). `columns` is an array of identifier-validated
+/// names; each row in `rows` is an array of values in that column order.
+/// Returns the appended row count.
+#[no_mangle]
+pub extern "C" fn duckdb__appender_columns(args: *const c_char) -> *const c_char {
+    ffi_call(args, |v| {
+        let table = validate_identifier(
+            v["table"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing table"))?,
+            "table",
+        )?;
+        let cols_json = v["columns"]
+            .as_array()
+            .ok_or_else(|| anyhow!("missing columns (array of column names)"))?;
+        if cols_json.is_empty() {
+            bail!("columns must name at least one column");
+        }
+        let mut cols: Vec<String> = Vec::with_capacity(cols_json.len());
+        for c in cols_json {
+            let s = c
+                .as_str()
+                .ok_or_else(|| anyhow!("each column must be a string"))?;
+            cols.push(validate_identifier(s, "column")?);
+        }
+        let rows = v["rows"]
+            .as_array()
+            .ok_or_else(|| anyhow!("missing rows (array of column-ordered arrays)"))?
+            .clone();
+        with_conn(&v, |c| {
+            let col_refs: Vec<&str> = cols.iter().map(|s| s.as_str()).collect();
+            let mut app = c.appender_with_columns(&table, &col_refs)?;
+            let mut n = 0i64;
+            for row in &rows {
+                let cells = row
+                    .as_array()
+                    .ok_or_else(|| anyhow!("each row must be an array of column values"))?;
+                if cells.len() != cols.len() {
+                    bail!(
+                        "row has {} values but {} columns were named",
+                        cells.len(),
+                        cols.len()
+                    );
+                }
+                let boxed: Vec<Box<dyn duckdb::ToSql>> = cells.iter().map(value_to_tosql).collect();
+                let refs: Vec<&dyn duckdb::ToSql> = boxed.iter().map(|b| b.as_ref()).collect();
+                app.append_row(duckdb::appender_params_from_iter(refs))?;
+                n += 1;
+            }
+            app.flush()?;
+            Ok(json!({"table": table, "columns": cols, "appended": n}))
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1349,5 +1654,311 @@ mod tests {
             &json!({"table": "t; DROP TABLE t", "rows": []}),
         );
         assert!(v["error"].is_string(), "injection table must error");
+    }
+
+    // ── new ops: attach/detach, copy_from, index DDL, drop, native
+    //    catalog introspection, column-subset appender ──────────────────
+
+    /// ATTACH a real file-backed db under an alias, write through the alias,
+    /// confirm the table is visible as `alias.table`, then DETACH. Exercises
+    /// the multi-database path end to end against the engine.
+    #[test]
+    fn attach_detach_round_trip_through_alias() {
+        let dir = std::env::temp_dir();
+        let file = dir.join(format!(
+            "stryke-duckdb-attach-{}.duckdb",
+            std::process::id()
+        ));
+        let file_s = file.to_str().unwrap().to_string();
+        let _ = std::fs::remove_file(&file);
+        let sess = json!({"path": ":memory:", "session": "test-attach-detach"});
+
+        let mut a = sess.clone();
+        a["attach_path"] = json!(file_s);
+        a["alias"] = json!("ext");
+        let r = call_export(duckdb__attach, &a);
+        assert_eq!(
+            r["alias"],
+            json!("ext"),
+            "attach reports the alias; got {r}"
+        );
+
+        // Create + populate a table inside the attached db, read it back.
+        with_conn(&sess, |c| {
+            c.execute_batch("CREATE TABLE ext.things(id INTEGER)")?;
+            c.execute_batch("INSERT INTO ext.things VALUES (1),(2),(3)")?;
+            Ok(())
+        })
+        .unwrap();
+        let n = with_conn(&sess, |c| {
+            let mut s = c.prepare("SELECT count(*) FROM ext.things")?;
+            let mut rows = s.query([])?;
+            Ok(rows.next()?.unwrap().get::<_, i64>(0)?)
+        })
+        .unwrap();
+        assert_eq!(n, 3, "rows written through the attached alias are visible");
+
+        let d = call_export(
+            duckdb__detach,
+            &json!({"path": ":memory:", "session": "test-attach-detach", "alias": "ext"}),
+        );
+        assert_eq!(
+            d["detached"],
+            json!(true),
+            "detach reports success; got {d}"
+        );
+
+        let _ = std::fs::remove_file(&file);
+        let _ = std::fs::remove_file(format!("{file_s}.wal"));
+    }
+
+    /// attach/detach must reject an injection-shaped alias before issuing SQL.
+    #[test]
+    fn attach_detach_validate_alias() {
+        let v = call_export(
+            duckdb__attach,
+            &json!({"attach_path": "/tmp/x.db", "alias": "a; DROP TABLE t"}),
+        );
+        assert!(
+            v["error"].is_string(),
+            "injection alias must error on attach"
+        );
+        let v = call_export(duckdb__detach, &json!({"alias": "a\"b"}));
+        assert!(
+            v["error"].is_string(),
+            "injection alias must error on detach"
+        );
+        let v = call_export(duckdb__attach, &json!({"alias": "ext"}));
+        assert!(
+            v["error"].as_str().unwrap().contains("missing attach_path"),
+            "missing attach_path must error"
+        );
+    }
+
+    /// CREATE INDEX (incl. UNIQUE), then list it via duckdb_indexes(), then
+    /// DROP it — all against the engine. The DROP must remove it from the list.
+    #[test]
+    fn create_index_lists_then_drops() {
+        let sess = json!({"path": ":memory:", "session": "test-index-ddl"});
+        with_conn(&sess, |c| {
+            c.execute_batch("CREATE OR REPLACE TABLE widgets(id INTEGER, sku VARCHAR)")?;
+            Ok(())
+        })
+        .unwrap();
+
+        let mut ci = sess.clone();
+        ci["name"] = json!("idx_widgets_sku");
+        ci["table"] = json!("widgets");
+        ci["columns"] = json!(["sku"]);
+        ci["unique"] = json!(true);
+        let r = call_export(duckdb__create_index, &ci);
+        assert_eq!(
+            r["index"],
+            json!("idx_widgets_sku"),
+            "create_index reports name; got {r}"
+        );
+
+        let idx = call_export(duckdb__indexes, &sess);
+        let names: Vec<String> = idx["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|row| row["index_name"].as_str().map(|s| s.to_string()))
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "idx_widgets_sku"),
+            "duckdb_indexes() must list the new index; got {names:?}"
+        );
+
+        let d = call_export(
+            duckdb__drop,
+            &json!({"path": ":memory:", "session": "test-index-ddl", "kind": "index", "name": "idx_widgets_sku"}),
+        );
+        assert_eq!(
+            d["dropped"],
+            json!("idx_widgets_sku"),
+            "drop reports name; got {d}"
+        );
+        let idx2 = call_export(duckdb__indexes, &sess);
+        let names2: Vec<String> = idx2["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|row| row["index_name"].as_str().map(|s| s.to_string()))
+            .collect();
+        assert!(
+            !names2.iter().any(|n| n == "idx_widgets_sku"),
+            "dropped index must be gone; got {names2:?}"
+        );
+    }
+
+    /// create_index validates the column list shape and the index name.
+    #[test]
+    fn create_index_validates_args() {
+        let v = call_export(
+            duckdb__create_index,
+            &json!({"name": "i", "table": "t", "columns": []}),
+        );
+        assert!(
+            v["error"].as_str().unwrap().contains("at least one column"),
+            "empty columns must error; got {v}"
+        );
+        let v = call_export(
+            duckdb__create_index,
+            &json!({"name": "i; DROP TABLE t", "table": "t", "columns": ["c"]}),
+        );
+        assert!(v["error"].is_string(), "injection index name must error");
+    }
+
+    /// drop must reject an unknown kind and accept the if_exists default
+    /// (dropping an absent table is a no-op, not an error).
+    #[test]
+    fn drop_unknown_kind_errors_and_if_exists_is_default() {
+        let v = call_export(duckdb__drop, &json!({"kind": "schema", "name": "x"}));
+        assert!(
+            v["error"].as_str().unwrap().contains("drop kind must be"),
+            "unknown drop kind must error; got {v}"
+        );
+        // if_exists defaults to true, so dropping a never-created table is fine.
+        let v = call_export(
+            duckdb__drop,
+            &json!({"path": ":memory:", "session": "test-drop-default", "name": "never_existed"}),
+        );
+        assert_eq!(
+            v["dropped"],
+            json!("never_existed"),
+            "default if_exists drop is a no-op success; got {v}"
+        );
+    }
+
+    /// copy_from appends a CSV file's rows into an existing table. Writes a
+    /// temp CSV, COPYs it in, verifies the row count, then cleans up.
+    #[test]
+    fn copy_from_csv_appends_into_existing_table() {
+        let dir = std::env::temp_dir();
+        let csv = dir.join(format!("stryke-duckdb-copyfrom-{}.csv", std::process::id()));
+        let csv_s = csv.to_str().unwrap().to_string();
+        std::fs::write(&csv, "id,label\n1,a\n2,b\n3,c\n").unwrap();
+        let sess = json!({"path": ":memory:", "session": "test-copy-from"});
+        with_conn(&sess, |c| {
+            c.execute_batch("CREATE OR REPLACE TABLE loaded(id INTEGER, label VARCHAR)")?;
+            Ok(())
+        })
+        .unwrap();
+
+        let mut cf = sess.clone();
+        cf["table"] = json!("loaded");
+        cf["file"] = json!(csv_s);
+        cf["kind"] = json!("csv");
+        let r = call_export(duckdb__copy_from, &cf);
+        assert_eq!(r["copied"], json!(3), "copy_from reports 3 rows; got {r}");
+
+        let n = with_conn(&sess, |c| {
+            let mut s = c.prepare("SELECT count(*) FROM loaded")?;
+            let mut rows = s.query([])?;
+            Ok(rows.next()?.unwrap().get::<_, i64>(0)?)
+        })
+        .unwrap();
+        assert_eq!(n, 3, "all CSV rows landed in the table");
+
+        let _ = std::fs::remove_file(&csv);
+    }
+
+    /// table_info exposes the engine's native column view including the pk
+    /// flag, and database_size returns at least one stats row for :memory:.
+    #[test]
+    fn table_info_and_database_size_report_engine_state() {
+        let sess = json!({"path": ":memory:", "session": "test-table-info"});
+        with_conn(&sess, |c| {
+            c.execute_batch("CREATE OR REPLACE TABLE ti(id INTEGER PRIMARY KEY, name VARCHAR)")?;
+            Ok(())
+        })
+        .unwrap();
+
+        let mut ti = sess.clone();
+        ti["table"] = json!("ti");
+        let r = call_export(duckdb__table_info, &ti);
+        let rows = r["rows"].as_array().expect("table_info rows");
+        assert_eq!(rows.len(), 2, "table_info lists both columns; got {r}");
+        // The id column must be flagged pk (DuckDB emits pk as a truthy flag).
+        let id_row = rows
+            .iter()
+            .find(|row| row["name"] == json!("id"))
+            .expect("id column present");
+        let pk = &id_row["pk"];
+        assert!(
+            pk == &json!(true) || pk == &json!(1) || pk.as_i64() == Some(1),
+            "id column must be flagged primary key; got {pk}"
+        );
+
+        let ds = call_export(duckdb__database_size, &sess);
+        assert!(
+            ds["rows"].as_array().is_some_and(|a| !a.is_empty()),
+            "database_size returns at least one stats row; got {ds}"
+        );
+    }
+
+    /// constraints lists the PRIMARY KEY declared on a table.
+    #[test]
+    fn constraints_lists_primary_key() {
+        let sess = json!({"path": ":memory:", "session": "test-constraints"});
+        with_conn(&sess, |c| {
+            c.execute_batch("CREATE OR REPLACE TABLE c_tbl(id INTEGER PRIMARY KEY, v INTEGER)")?;
+            Ok(())
+        })
+        .unwrap();
+        let r = call_export(duckdb__constraints, &sess);
+        let types: Vec<String> = r["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|row| row["constraint_type"].as_str().map(|s| s.to_string()))
+            .collect();
+        assert!(
+            types.iter().any(|t| t.contains("PRIMARY KEY")),
+            "constraints must surface the PRIMARY KEY; got {types:?}"
+        );
+    }
+
+    /// appender_columns loads only a column subset; the unnamed column takes
+    /// its DEFAULT. Row-length mismatch against the named columns must error.
+    #[test]
+    fn appender_columns_subset_load_and_arity_check() {
+        let sess = json!({"path": ":memory:", "session": "test-appender-columns"});
+        with_conn(&sess, |c| {
+            c.execute_batch("CREATE OR REPLACE TABLE ac(id INTEGER, note VARCHAR DEFAULT 'def')")?;
+            Ok(())
+        })
+        .unwrap();
+
+        let mut ap = sess.clone();
+        ap["table"] = json!("ac");
+        ap["columns"] = json!(["id"]);
+        ap["rows"] = json!([[1], [2], [3]]);
+        let r = call_export(duckdb__appender_columns, &ap);
+        assert_eq!(
+            r["appended"],
+            json!(3),
+            "appender_columns reports 3; got {r}"
+        );
+
+        let got = with_conn(&sess, |c| {
+            let mut s = c.prepare("SELECT note FROM ac WHERE id = 1")?;
+            let mut rows = s.query([])?;
+            Ok(rows.next()?.unwrap().get::<_, String>(0)?)
+        })
+        .unwrap();
+        assert_eq!(got, "def", "unnamed column took its DEFAULT");
+
+        // Row arity mismatch: 1 named column, 2-value row → error before append.
+        let mut bad = sess.clone();
+        bad["table"] = json!("ac");
+        bad["columns"] = json!(["id"]);
+        bad["rows"] = json!([[1, 2]]);
+        let e = call_export(duckdb__appender_columns, &bad);
+        assert!(
+            e["error"].as_str().unwrap().contains("values but"),
+            "row/column arity mismatch must error; got {e}"
+        );
     }
 }

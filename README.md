@@ -197,8 +197,15 @@ DuckDB::exec_file   $path, %opts → { ok: true }
 DuckDB::explain     $sql, %opts → $plan_text          # opts: analyze => 1 for EXPLAIN ANALYZE
 DuckDB::insert_many $table, $rows_aref, %opts → $inserted_count   # single multi-row INSERT
 DuckDB::appender    $table, $rows_aref, %opts → $appended_count   # native Appender — fastest bulk load
+DuckDB::appender_columns $table, $cols_aref, $rows_aref, %opts → $appended_count   # native Appender into a column subset (rest take DEFAULT/NULL)
 DuckDB::import      $path, $table, %opts → { table, kind, source, num_rows }
 DuckDB::export      $table, $path, %opts → { table, kind, path, file_size }
+DuckDB::copy_from   $table, $file, %opts → { table, path, copied }   # COPY … FROM into an existing table; opts: kind => csv|parquet|json|auto
+DuckDB::create_index $name, $table, $cols_aref, %opts → { index, table, columns }   # opts: unique => 1, if_not_exists => 1
+DuckDB::drop        $name, %opts → { dropped, kind }   # opts: kind => table|view|index (default table), if_exists (default 1), cascade
+DuckDB::drop_index  $name, %opts → { dropped, kind }   # convenience for drop kind => index
+DuckDB::attach      $file, $alias, %opts → { alias, attach_path, read_only }   # ATTACH a db file under $alias; opts: attach_read_only, if_not_exists
+DuckDB::detach      $alias, %opts → { alias, detached }   # DETACH; opts: if_exists
 DuckDB::update      $table, $set_href, $where?, %opts → $affected   # UPDATE … SET … [WHERE]
 DuckDB::delete      $table, $where?, %opts → $affected               # DELETE FROM … [WHERE]
 DuckDB::truncate    $table, %opts → 1                 # DELETE FROM (empties the table)
@@ -295,11 +302,16 @@ DuckDB::extensions     %opts → @{ {extension_name, loaded, installed, descript
 DuckDB::quote_identifier $name → $quoted            # "..." with inner " doubled; safe dynamic-SQL identifier (pure)
 DuckDB::schema         $table, %opts → { table, num_rows, columns: [...] }
 DuckDB::inspect        %opts → { version, file, file_size, databases: [...] }
+DuckDB::version        → $version_string            # the stryke-duckdb package version
 DuckDB::server_version %opts → $version_string     # live SELECT version() (e.g. "v1.5.3")
 DuckDB::ping           %opts → 1 | ""
 DuckDB::count          $table, $where?, %opts → $row_count   # SELECT count(*) [WHERE $where]
 DuckDB::exists         $table, $where?, %opts → 1 | 0        # SELECT EXISTS(…) — short-circuits
 DuckDB::table_exists   $name, %opts → 1 | 0                  # $name must be a plain identifier
+DuckDB::table_info     $table, %opts → @{ {cid, name, type, notnull, dflt_value, pk} }   # PRAGMA table_info (includes pk flag)
+DuckDB::indexes        %opts → @{ {index_name, table_name, schema_name, is_unique, sql} }       # duckdb_indexes()
+DuckDB::constraints    %opts → @{ {schema_name, table_name, constraint_type, constraint_text} } # duckdb_constraints()
+DuckDB::database_size  %opts → @{ storage stats }   # PRAGMA database_size (block/wal/db sizes)
 ```
 
 `exists` uses SQL `EXISTS`, which stops at the first matching row — prefer
@@ -333,6 +345,43 @@ DuckDB::install_extension / load_extension   $name, %opts → 1      # INSTALL /
 DuckDB::pragma          $name, %opts → @rows
 ```
 
+### Multi-database & DDL
+
+FFI-backed object lifecycle and multi-database operations. The file path for
+`attach` rides in its own `$file` argument (mapped to `attach_path`), and
+`copy_from`'s source file rides in `$file` too — neither collides with the
+connection's own `db` path, so you can `attach` a second database onto an
+in-memory or file-backed connection. Identifiers (alias, index, table,
+columns) are validated; file paths are single-quote escaped.
+
+```stryke
+DuckDB::attach           $file, $alias, %opts → { alias, attach_path, read_only }
+                                                # ATTACH; opts: attach_read_only, if_not_exists
+DuckDB::detach           $alias, %opts → { alias, detached }            # DETACH; opts: if_exists
+DuckDB::copy_from        $table, $file, %opts → { table, path, copied } # COPY … FROM file into an existing table
+                                                # opts: kind => csv|parquet|json|auto
+DuckDB::create_index     $name, $table, \@columns, %opts → { index, table, columns }
+                                                # CREATE INDEX; opts: unique, if_not_exists
+DuckDB::drop             $name, %opts → { dropped, kind }   # DROP table|view|index; opts: kind, if_exists (default 1), cascade
+DuckDB::drop_index       $name, %opts → { dropped, kind }   # DROP INDEX (kind=index convenience)
+DuckDB::appender_columns $table, \@columns, \@rows, %opts → $appended_count
+                                                # native Appender into a column SUBSET; unnamed cols take DEFAULT/NULL
+```
+
+`copy_from` appends a file's rows into a table that already exists (DuckDB's
+native bulk file loader), distinct from `import` which does `CREATE TABLE
+AS`. `appender_columns` is the column-subset companion to `appender`: name a
+subset of the table's columns and supply only those values per row; every
+unnamed column takes its `DEFAULT` (or NULL).
+
+```stryke
+DuckDB::attach "warehouse.duckdb", "wh", attach_read_only => 1
+DuckDB::copy_from "events", "events.csv", kind => "csv"
+DuckDB::create_index "idx_events_ts", "events", ["ts"], unique => 1
+DuckDB::appender_columns "events", ["id", "kind"], [[1, "click"], [2, "view"]]
+DuckDB::drop "events"                                  # DROP TABLE IF EXISTS events
+```
+
 ## [0x05] FFI layer
 
 Each `DuckDB::*` wrapper builds a JSON args dict and calls a sibling
@@ -351,6 +400,13 @@ Wire shape (cdylib responses):
 * `export` → `{"path": ..., "kind": ...}`
 * `tables` → `{"tables": [...]}`
 * `schema` → `{"table": ..., "columns": [{name, type, nullable}, ...]}`
+* `attach` → `{"alias": ..., "attach_path": ..., "read_only": <bool>}`
+* `detach` → `{"alias": ..., "detached": true}`
+* `copy_from` → `{"table": ..., "path": ..., "copied": <n>}`
+* `create_index` → `{"index": ..., "table": ..., "columns": [...]}`
+* `drop` → `{"dropped": ..., "kind": ...}`
+* `appender_columns` → `{"table": ..., "columns": [...], "appended": <n>}`
+* `indexes`, `constraints`, `table_info`, `database_size` → `{"columns": [...], "rows": [...]}`
 * `inspect`, `ping` → `{...}`
 * Errors → `{"error": "<msg>"}` — the wrapper `die`s with it
 
@@ -411,9 +467,12 @@ stryke-duckdb/
     DuckDB.stk                     # `use DuckDB` — thin wrapper around the FFI symbols
   t/
     test_duckdb.stk                # self-contained assertion round-trip
+    test_analytics.stk             # analytics/introspection helpers
     test_stryke_duckdb_surface.stk # wrapper-completeness pin
   examples/
     aggregate_csv.stk
+    analytics.stk
+    crud.stk
     discover.stk
     parquet_to_db.stk
     query_parquet.stk

@@ -56,6 +56,19 @@ assert_ok exists &DuckDB::settings, "DuckDB::settings exists"
 assert_ok exists &DuckDB::extensions, "DuckDB::extensions exists"
 assert_ok exists &DuckDB::quote_identifier, "DuckDB::quote_identifier exists"
 
+# ── DuckDB.stk multi-db + index DDL + native introspection ──
+assert_ok exists &DuckDB::attach, "DuckDB::attach exists"
+assert_ok exists &DuckDB::detach, "DuckDB::detach exists"
+assert_ok exists &DuckDB::copy_from, "DuckDB::copy_from exists"
+assert_ok exists &DuckDB::create_index, "DuckDB::create_index exists"
+assert_ok exists &DuckDB::drop, "DuckDB::drop exists"
+assert_ok exists &DuckDB::drop_index, "DuckDB::drop_index exists"
+assert_ok exists &DuckDB::indexes, "DuckDB::indexes exists"
+assert_ok exists &DuckDB::constraints, "DuckDB::constraints exists"
+assert_ok exists &DuckDB::table_info, "DuckDB::table_info exists"
+assert_ok exists &DuckDB::database_size, "DuckDB::database_size exists"
+assert_ok exists &DuckDB::appender_columns, "DuckDB::appender_columns exists"
+
 # ── pure SQL-quoting helpers ──
 assert_ok exists &DuckDB::quote_ident, "DuckDB::quote_ident exists"
 assert_ok exists &DuckDB::unquote_ident, "DuckDB::unquote_ident exists"
