@@ -22,6 +22,8 @@ need them, full standard SQL on top. Opt-in package tier.
 
 ### [`strykelang`](https://github.com/MenkeTechnologies/strykelang) &middot; [`MenkeTechnologiesMeta`](https://github.com/MenkeTechnologies/MenkeTechnologiesMeta) · [`stryke-arrow`](https://github.com/MenkeTechnologies/stryke-arrow) · [`stryke-parquet`](https://github.com/MenkeTechnologies/stryke-parquet) · [`stryke-postgres`](https://github.com/MenkeTechnologies/stryke-postgres) · [`stryke-demo`](https://github.com/MenkeTechnologies/stryke-demo)
 
+### [`Read the Docs`](https://menketechnologies.github.io/stryke-duckdb/) &middot; [`Engineering Report`](https://menketechnologies.github.io/stryke-duckdb/report.html)
+
 ---
 
 ## Table of Contents
