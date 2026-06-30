@@ -102,7 +102,7 @@
         <div class="stat-card"><div class="stat-val cyan">dlopen</div><div class="stat-label">Load model</div></div>
         <div class="stat-card"><div class="stat-val">JSON-over-FFI</div><div class="stat-label">Envelope</div></div>
         <div class="stat-card"><div class="stat-val green">91</div><div class="stat-label">Public DuckDB:: fns</div></div>
-        <div class="stat-card"><div class="stat-val green">34</div><div class="stat-label">FFI exports (duckdb__*)</div></div>
+        <div class="stat-card"><div class="stat-val green">33</div><div class="stat-label">FFI exports (duckdb__*)</div></div>
         <div class="stat-card"><div class="stat-val">v0.19.0</div><div class="stat-label">Package version</div></div>
         <div class="stat-card"><div class="stat-val">MIT</div><div class="stat-label">License</div></div>
       </div>
@@ -163,7 +163,7 @@
 
       <hr class="section-rule">
       <h2 class="tutorial-title"><span class="step-hash">+</span>SURFACE INVENTORY</h2>
-      <p>The package exposes <strong>91 public <code>DuckDB::*</code> functions</strong> from <code>lib/DuckDB.stk</code>. Of these, <strong>34 cross the FFI boundary</strong> to a <code>duckdb__*</code> symbol in the cdylib; the remainder are pure-stryke helpers composed over <code>query</code> / <code>execute</code> (CRUD, analytics, quote/parse). The cdylib's <code>extern "C"</code> exports are declared in <code>stryke.toml</code> under <code>[ffi].exports</code> and matched by <code>extern "C" fn duckdb__&lt;verb&gt;</code> definitions in <code>src/lib.rs</code>.</p>
+      <p>The package exposes <strong>91 public <code>DuckDB::*</code> functions</strong> from <code>lib/DuckDB.stk</code>. Of these, <strong>33 cross the FFI boundary</strong> to a <code>duckdb__*</code> symbol in the cdylib; the remainder are pure-stryke helpers composed over <code>query</code> / <code>execute</code> (CRUD, analytics, quote/parse). The cdylib's <code>extern "C"</code> exports are declared in <code>stryke.toml</code> under <code>[ffi].exports</code> and matched by <code>extern "C" fn duckdb__&lt;verb&gt;</code> definitions in <code>src/lib.rs</code>.</p>
       <table class="arch-table">
         <thead><tr><th>Category</th><th>Surface</th></tr></thead>
         <tbody>
