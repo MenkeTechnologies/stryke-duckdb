@@ -57,8 +57,8 @@ the scan, and returns a row count. The same engine that powers Motherduck,
 the same SQL surface as PostgreSQL, with the embedded-runtime ergonomics
 of SQLite.
 
-Pairs cleanly with [stryke-arrow](../stryke-arrow) (data pipeline) and
-[stryke-parquet](../stryke-parquet) (file diagnostics). DuckDB closes the
+Pairs cleanly with [stryke-arrow](https://github.com/MenkeTechnologies/stryke-arrow) (data pipeline) and
+[stryke-parquet](https://github.com/MenkeTechnologies/stryke-parquet) (file diagnostics). DuckDB closes the
 "now what do I do with this data" loop — runs SQL on the file you just
 inspected.
 
@@ -441,7 +441,7 @@ trip, and metadata introspection.
 ## [0x07] DuckDB type encoding
 
 Output JSON is produced via the Arrow result iterator, so types match
-[stryke-arrow](../stryke-arrow):
+[stryke-arrow](https://github.com/MenkeTechnologies/stryke-arrow):
 
 | DuckDB | JSON |
 |---|---|
@@ -485,6 +485,7 @@ stryke-duckdb/
   t/
     test_duckdb.stk                # self-contained assertion round-trip
     test_analytics.stk             # analytics/introspection helpers
+    test_introspection.stk         # catalog/runtime introspection + config surface
     test_stryke_duckdb_surface.stk # wrapper-completeness pin
   examples/
     aggregate_csv.stk
