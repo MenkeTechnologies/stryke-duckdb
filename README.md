@@ -92,7 +92,8 @@ make install
 ```stryke
 use DuckDB
 
-# In-memory queries (default — every invocation starts fresh).
+# In-memory queries (default session; `:memory:` state persists across calls
+# within one stryke process).
 p DuckDB::query "SELECT 1 + 1 AS two, 'hi' AS s"
 
 # Query a parquet file directly — no table to create.
@@ -117,17 +118,15 @@ DuckDB::execute "INSERT INTO users VALUES (?, ?, ?)",
 
 # Bulk load a parquet into a table.
 val $r = DuckDB::import "events.parquet", "events",
-                       db => "app.duckdb",
-                       replace => 1
-p "loaded $r->{num_rows} rows"
+                       db => "app.duckdb"
+p "loaded $r->{rows} rows"
 
 # Dump table back out.
-DuckDB::export "events", "events.zstd.parquet",
+DuckDB::export "events", "events.parquet",
                db => "app.duckdb",
-               kind => "parquet",
-               compression => "zstd"
+               kind => "parquet"
 
-# Stream large results without buffering on the stryke side.
+# Per-row callback (the cdylib returns the full result in one call; iteration is buffered).
 DuckDB::query_stream "SELECT * FROM events",
     db => "app.duckdb",
     callback => fn { process _ }
@@ -200,8 +199,8 @@ DuckDB::explain     $sql, %opts → $plan_text          # opts: analyze => 1 for
 DuckDB::insert_many $table, $rows_aref, %opts → $inserted_count   # single multi-row INSERT
 DuckDB::appender    $table, $rows_aref, %opts → $appended_count   # native Appender — fastest bulk load
 DuckDB::appender_columns $table, $cols_aref, $rows_aref, %opts → $appended_count   # native Appender into a column subset (rest take DEFAULT/NULL)
-DuckDB::import      $path, $table, %opts → { table, kind, source, num_rows }
-DuckDB::export      $table, $path, %opts → { table, kind, path, file_size }
+DuckDB::import      $path, $table, %opts → { table, rows }   # always CREATE OR REPLACE TABLE
+DuckDB::export      $table, $path, %opts → { path, kind }
 DuckDB::copy_from   $table, $file, %opts → { table, path, copied }   # COPY … FROM into an existing table; opts: kind => csv|parquet|json|auto
 DuckDB::create_index $name, $table, $cols_aref, %opts → { index, table, columns }   # opts: unique => 1, if_not_exists => 1
 DuckDB::drop        $name, %opts → { dropped, kind }   # opts: kind => table|view|index (default table), if_exists (default 1), cascade
@@ -277,8 +276,8 @@ val @r = DuckDB::upsert "kv", { id => 2, name => "b" },
                        conflict => ["id"], returning => "*"
 ```
 
-`import` opts: `kind` (`parquet|csv|json|auto`), `replace`, plus connection.
-`export` opts: `kind` (`parquet|csv|json`), `compression` (parquet only).
+`import` opts: `kind` (`parquet|csv|json|auto`), plus connection.
+`export` opts: `kind` (`parquet|csv|json`), plus connection.
 
 ### Transactions
 
@@ -295,18 +294,18 @@ DuckDB::transaction $code, %opts → $code_result  # BEGIN; $code->(); COMMIT �
 ### Metadata
 
 ```stryke
-DuckDB::tables         %opts → @{ {name, schema}, … }
+DuckDB::tables         %opts → @{ {name}, … }
 DuckDB::databases      %opts → @names              # attached + system/temp catalogs
 DuckDB::views          %opts → @names              # view names in current schema
 DuckDB::functions      %opts → @names              # distinct function names
 DuckDB::settings       %opts → @{ {name, value, description} }
 DuckDB::extensions     %opts → @{ {extension_name, loaded, installed, description} }
 DuckDB::quote_identifier $name → $quoted            # "..." with inner " doubled; safe dynamic-SQL identifier (pure)
-DuckDB::schema         $table, %opts → { table, num_rows, columns: [...] }
-DuckDB::inspect        %opts → { version, file, file_size, databases: [...] }
+DuckDB::schema         $table, %opts → { table, columns: [{name, type, nullable}, ...] }
+DuckDB::inspect        %opts → { path, duckdb_version, table_count }
 DuckDB::version        → $version_string            # the stryke-duckdb package version
 DuckDB::server_version %opts → $version_string     # live SELECT version() (e.g. "v1.5.3")
-DuckDB::ping           %opts → 1 | ""
+DuckDB::ping           %opts → 1 | 0
 DuckDB::count          $table, $where?, %opts → $row_count   # SELECT count(*) [WHERE $where]
 DuckDB::exists         $table, $where?, %opts → 1 | 0        # SELECT EXISTS(…) — short-circuits
 DuckDB::table_exists   $name, %opts → 1 | 0                  # $name must be a plain identifier
